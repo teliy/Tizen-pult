@@ -1,6 +1,8 @@
 package com.teliy.tizenpult
 
 import android.annotation.SuppressLint
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
@@ -43,6 +45,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnConnect).setOnClickListener { connect() }
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
+        findViewById<Button>(R.id.btnCopyLog).setOnClickListener { copyLog() }
 
         val btnPowerOn = findViewById<Button>(R.id.btnPowerOn)
         btnPowerOn.setOnClickListener { powerOn() }
@@ -171,6 +174,14 @@ class MainActivity : AppCompatActivity() {
                 // REST закрыт или ТВ выключен — MAC можно ввести вручную
             }
         }.start()
+    }
+
+    /** Копирует журнал в буфер обмена — чтобы вставить его в чат для диагностики */
+    private fun copyLog() {
+        val text = logLines.joinToString("\n").ifBlank { "Лог пуст" }
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("tizenpult-log", text))
+        toast("Лог скопирован — вставьте его в чат")
     }
 
     private fun appendLog(line: String) {

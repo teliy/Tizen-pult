@@ -153,14 +153,16 @@ class SamsungRemote(
         }
     }
 
-    /** Нажатие кнопки пульта, например KEY_VOLUP, KEY_POWER, KEY_HDMI_1 */
+    /** Нажатие кнопки пульта, например KEY_VOLUP, KEY_POWER, KEY_HDMI */
     fun sendKey(key: String) {
         send(JSONObject().apply {
             put("method", "ms.remote.control")
             put("params", JSONObject().apply {
                 put("Cmd", "Click")
                 put("DataOfCmd", key)
-                put("Option", JSONObject().put("false", false))
+                // Формат как в samsungctl / samsungtvws (Home Assistant):
+                // Option — строка "false", а не JSON-объект {"false": false}
+                put("Option", "false")
                 put("TypeOfRemote", "SendRemoteKey")
             })
         })

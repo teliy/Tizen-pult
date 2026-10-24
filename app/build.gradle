@@ -11,14 +11,29 @@ android {
         applicationId "com.teliy.tizenpult"
         minSdk 24
         targetSdk 34
-        versionCode 2
-        versionName "1.1"
+        versionCode 3
+        versionName "1.2"
+    }
+
+    // Фиксированный ключ подписи в репозитории: все сборки CI взаимно совместимы,
+    // обновления устанавливаются поверх предыдущих без удаления приложения.
+    signingConfigs {
+        debug {
+            storeFile rootProject.file('keystore/debug.keystore')
+            storePassword 'tizenpult'
+            keyAlias 'tizenpult'
+            keyPassword 'tizenpult'
+        }
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.debug
         }
     }
     compileOptions {

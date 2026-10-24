@@ -110,7 +110,7 @@
                     android:layout_weight="1"
                     android:layout_margin="2dp"
                     android:onClick="onKeyClick"
-                    android:tag="KEY_VOLUMDOWN"
+                    android:tag="KEY_VOLUMEDOWN"
                     android:text="VOL −" />
                 <Button
                     android:layout_width="match_parent"
@@ -313,7 +313,15 @@
             android:scrollbars="vertical"
             android:text="(пусто — нажмите «Подключ.»)"
             android:textColor="#9FE89F"
+            android:textIsSelectable="true"
             android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/btnCopyLog"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Копировать лог (отправить в чат)" />
 
     </LinearLayout>
 </ScrollView>
