@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
+import android.text.method.ScrollingMovementMethod
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
@@ -22,6 +23,9 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var ipInput: EditText
     private lateinit var statusView: TextView
+    private lateinit var logView: TextView
+
+    private val logLines = ArrayDeque<String>()
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -31,6 +35,8 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
         ipInput = findViewById(R.id.ipInput)
         statusView = findViewById(R.id.statusView)
+        logView = findViewById(R.id.logView)
+        logView.movementMethod = ScrollingMovementMethod()
 
         ipInput.setText(prefs.getString("host", ""))
 
@@ -69,6 +75,7 @@ class MainActivity : AppCompatActivity() {
             r.action()
         } catch (e: Exception) {
             toast("Ошибка: ${e.message}")
+            appendLog("!! исключение при отправке: ${e.message}")
         }
     }
 
@@ -89,7 +96,8 @@ class MainActivity : AppCompatActivity() {
             onToken = { t ->
                 prefs.edit().putString("token", t).apply()
             },
-            onApps = { apps -> runOnUiThread { showApps(apps) } }
+            onApps = { apps -> runOnUiThread { showApps(apps) } },
+            onLog = { s -> runOnUiThread { appendLog(s) } }
         )
         remote?.connect()
         fetchDeviceInfo(host)
@@ -163,6 +171,16 @@ class MainActivity : AppCompatActivity() {
                 // REST закрыт или ТВ выключен — MAC можно ввести вручную
             }
         }.start()
+    }
+
+    private fun appendLog(line: String) {
+        logLines.addLast(line)
+        while (logLines.size > 120) logLines.removeFirst()
+        logView.text = logLines.joinToString("\n")
+        logView.post {
+            val contentHeight = logView.layout?.height ?: 0
+            if (contentHeight > 0) logView.scrollTo(0, contentHeight)
+        }
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

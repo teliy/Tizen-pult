@@ -292,5 +292,28 @@
             android:text="Первое подключение: ТВ покажет запрос — нажмите «Разрешить» на экране ТВ."
             android:textSize="12sp" />
 
+        <!-- Журнал связи с ТВ (для диагностики) -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="10dp"
+            android:text="Лог связи с ТВ:"
+            android:textStyle="bold"
+            android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/logView"
+            android:layout_width="match_parent"
+            android:layout_height="220dp"
+            android:layout_marginTop="4dp"
+            android:background="#111111"
+            android:fadeScrollbars="false"
+            android:fontFamily="monospace"
+            android:padding="6dp"
+            android:scrollbars="vertical"
+            android:text="(пусто — нажмите «Подключ.»)"
+            android:textColor="#9FE89F"
+            android:textSize="10sp" />
+
     </LinearLayout>
 </ScrollView>

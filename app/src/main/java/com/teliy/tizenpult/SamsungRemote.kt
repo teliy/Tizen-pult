@@ -13,6 +13,9 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -22,50 +25,70 @@ import javax.net.ssl.X509TrustManager
  * Клиент Samsung TV Remote API (WebSocket, порт 8002, TLS).
  *
  * Совместим с Tizen 5.5 (модели 2021, например UE43AU9000) и новее.
- * Протокол: wss://<ip>:8002/api/v2/channels/samsung.remote.control
- *
- * При первом подключении без токена ТВ показывает запрос «Разрешить».
- * После подтверждения приходит событие ms.channel.connect с токеном —
- * его нужно сохранить и передавать при следующих подключениях.
+ * Все входящие/исходящие кадры дублируются в onLog — для диагностики на экране.
  */
 class SamsungRemote(
     private val host: String,
     private val token: String?,
     private val onStatus: (String) -> Unit,
     private val onToken: (String) -> Unit,
-    private val onApps: (List<AppInfo>) -> Unit
+    private val onApps: (List<AppInfo>) -> Unit,
+    private val onLog: (String) -> Unit
 ) {
     data class AppInfo(val appId: String, val name: String)
 
     private var ws: WebSocket? = null
     private val client: OkHttpClient = unsafeClient()
+    private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+    private fun log(msg: String) {
+        onLog("${timeFmt.format(Date())}  $msg")
+    }
+
+    /** Скрываем токен в логах */
+    private fun mask(s: String): String =
+        s.replace(Regex("(\"token\"\\s*:\\s*\")([^\"]+)(\")")) { m ->
+            "${m.groupValues[1]}${m.groupValues[2].take(3)}...${m.groupValues[3]}"
+        }
 
     fun connect() {
         val name = Base64.encodeToString("Tizen Pult".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         var url = "wss://$host:8002/api/v2/channels/samsung.remote.control?name=$name"
-        if (!token.isNullOrBlank()) url += "&token=$token"
+        val withToken = !token.isNullOrBlank()
+        if (withToken) url += "&token=$token"
+
+        log(if (withToken) "Подключение к wss://$host:8002 (с сохранённым токеном)" else "Подключение к wss://$host:8002 (без токена — ТВ покажет запрос)")
 
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                log("WS открыт: HTTP ${response.code}")
                 onStatus("Соединение открыто, ждём ответ ТВ...")
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
+                log("◀ ТВ: ${mask(text).take(400)}")
                 try {
                     handleMessage(JSONObject(text))
-                } catch (_: Exception) {
-                    // игнорируем нераспознанные кадры
+                } catch (e: Exception) {
+                    log("!! не удалось разобрать кадр: ${e.message}")
                 }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                log("ТВ закрывает соединение: code=$code reason=${reason.ifBlank { "-" }}")
+                webSocket.close(1000, null)
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                log("WS закрыт: code=$code")
+                onStatus("Отключено — нажмите «Подключ.» для повторного сеанса")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 val reason = t.message ?: "нет соединения"
+                log("✖ Ошибка WS: $reason")
                 onStatus("Ошибка: $reason")
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                onStatus("Отключено")
             }
         })
     }
@@ -74,18 +97,25 @@ class SamsungRemote(
         when (obj.optString("event")) {
             "ms.channel.connect" -> {
                 val t = obj.optJSONObject("data")?.optString("token")
-                if (!t.isNullOrBlank()) onToken(t)
+                if (!t.isNullOrBlank()) {
+                    log("✔ Авторизация пройдена, токен получен (${t.take(3)}...) и сохранён")
+                    onToken(t)
+                }
                 onStatus("Подключено к ТВ ✔")
             }
 
             "ms.channel.unauthorized" -> {
-                onStatus("Доступ не подтверждён: нажмите «Подключ.» ещё раз и выберите «Разрешить» на ТВ")
+                log("ТВ отклонил доступ (unauthorized)")
+                onStatus("Нажмите «Подключ.» ещё раз и выберите «Разрешить» на ТВ")
             }
 
             "ed.installedApp.get", "ed.edenAppList.get" -> {
                 val apps = parseApps(obj)
+                log("Список приложений: ${apps.size} шт.")
                 if (apps.isNotEmpty()) onApps(apps)
             }
+
+            else -> log("событие: ${obj.optString("event")}")
         }
     }
 
@@ -114,7 +144,13 @@ class SamsungRemote(
     }
 
     private fun send(payload: JSONObject) {
-        ws?.send(payload.toString())
+        val sent = ws?.send(payload.toString()) ?: false
+        if (sent) {
+            log("▶ К ТВ: ${payload}")
+        } else {
+            log("!! НЕ отправлено — соединение закрыто. Нажмите «Подключ.»")
+            onStatus("Соединение потеряно — нажмите «Подключ.»")
+        }
     }
 
     /** Нажатие кнопки пульта, например KEY_VOLUP, KEY_POWER, KEY_HDMI_1 */
