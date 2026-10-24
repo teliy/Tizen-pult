@@ -19,13 +19,8 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Установить Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Установить Gradle (страховка, если wrapper недоступен)
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
+      # Android SDK уже предустановлен на раннере ubuntu-latest —
+      # отдельная установка не нужна (setup-android@v3 падает на новом sdkmanager)
 
       - name: Сборка debug APK
         run: |
