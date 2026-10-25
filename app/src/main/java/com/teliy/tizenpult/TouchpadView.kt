@@ -11,16 +11,20 @@ import kotlin.math.abs
 import kotlin.math.hypot
 
 /**
- * Тачпад-поверхность пульта (v2.8).
+ * Тачпад-поверхность пульта (v2.9).
  *
  * Два режима работы:
  *
  * 1) MOUSE — «настоящая» мышь для Tizen-ТВ (wss/ws): метод ProcessMouseDevice
- *    канала ms.remote.control (эталон samsungctl / samsung-tv-ws-api):
- *      {"Cmd":"Move","Position":{"x":X,"y":Y,"Time":"…"},"TypeOfRemote":"ProcessMouseDevice"}
+ *    канала ms.remote.control. Формат И СЕМАНТИКА — по реверсу официальной
+ *    библиотеки Samsung multiscreen (SmartThings/Smart View, класс RemoteControl):
+ *      {"Cmd":"Move","Position":{"x":dX,"y":dY,"Time":"epoch-ms"},"TypeOfRemote":"ProcessMouseDevice"}
  *      {"Cmd":"LeftClick","TypeOfRemote":"ProcessMouseDevice"}
- *    Палец двигает виртуальный курсор; координаты — абсолютные, в логическом
- *    пространстве экрана ТВ 1920×1080 (Tizen UI рисуется в этом канвасе и на 4K).
+ *    ВАЖНО: Position.x/y — это ДЕЛЬТА сдвига курсора (в офиц. либе туда кладётся
+ *    currentMoveDelta), а НЕ абсолютная позиция! v2.8 слала абсолютные координаты
+ *    1920×1080 — ТВ трактовал их как сдвиг, курсор улетал за край и «замирал»
+ *    (симптом теста: «курсор пропал, движения нет»). Палец двигает виртуальный
+ *    курсор пульта, а в ТВ уходит разница с прошлым отправленным кадром.
  *
  * 2) ARROWS — для старых ТВ (Smart View 2.0 «smart», 55000 «legacy»): мыши в
  *    протоколе нет (в encrypted-API эталона только plugin RemoteControl — клавиши),
@@ -32,11 +36,18 @@ import kotlin.math.hypot
  */
 class TouchpadView(
     context: Context,
-    private val mouseMode: Boolean,
-    private val onMove: (Int, Int) -> Unit,   // MOUSE: двигать курсор ТВ
+    mouseMode: Boolean,
+    private val onMove: (Int, Int) -> Unit,   // MOUSE: дельта сдвига курсора ТВ (dX,dY)
     private val onClick: () -> Unit,          // MOUSE: LeftClick / ARROWS: KEY_ENTER
     private val onArrow: (String) -> Unit     // ARROWS: KEY_UP/DOWN/LEFT/RIGHT
 ) : View(context) {
+
+    /** Переключение режима на лету (тумблер «мышь ⇄ стрелки» в диалоге тачпада) */
+    fun setMode(mouse: Boolean) {
+        mouseMode = mouse
+        lastSend = 0L
+        invalidate()
+    }
 
     companion object {
         /** Логическое пространство экрана ТВ */
@@ -47,9 +58,13 @@ class TouchpadView(
         private const val CLICK_SLOP_DP = 18f          // тап — без сдвига пальца
     }
 
-    // Виртуальный курсор (координаты ТВ), старт — центр экрана
+    // Виртуальный курсор (координаты ТВ, для отрисовки на тачпаде), старт — центр
+    private var mouseMode = mouseMode
     private var curX = TV_W / 2f
     private var curY = TV_H / 2f
+    // Виртуальная позиция на момент последней ОТПРАВКИ — от неё считается дельта
+    private var sentX = TV_W / 2f
+    private var sentY = TV_H / 2f
 
     // Состояние жеста
     private var lastTouchX = 0f
@@ -59,8 +74,6 @@ class TouchpadView(
     private var accY = 0f
     private var lastSend = 0L
     private var lastArrowAt = 0L
-    private var lastSentX = -1
-    private var lastSentY = -1
     private var lastDir = ""         // последняя стрелка (для подсветки)
     private var lastDirAt = 0L
 
@@ -92,6 +105,7 @@ class TouchpadView(
             MotionEvent.ACTION_DOWN -> {
                 lastTouchX = e.x; lastTouchY = e.y
                 gestureDistance = 0f; accX = 0f; accY = 0f
+                lastSend = 0L // новый жест не должен попадать под троттлинг прошлого
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
             }
@@ -126,13 +140,16 @@ class TouchpadView(
         invalidate()
     }
 
+    /** Отправить накопленную ДЕЛЬТУ (разницу с прошлой отправкой) с троттлингом */
     private fun sendMoveNow(force: Boolean) {
-        val tx = curX.toInt(); val ty = curY.toInt()
-        if (tx == lastSentX && ty == lastSentY) return
+        val dx = (curX - sentX).toInt()
+        val dy = (curY - sentY).toInt()
+        if (dx == 0 && dy == 0) return
         val now = SystemClock.elapsedRealtime()
         if (!force && now - lastSend < MOVE_SEND_INTERVAL_MS) return
-        lastSend = now; lastSentX = tx; lastSentY = ty
-        onMove(tx, ty)
+        lastSend = now
+        sentX += dx; sentY += dy // дробный остаток копится в (curX - sentX)
+        onMove(dx, dy)
     }
 
     private fun pushArrows(dx: Float, dy: Float) {

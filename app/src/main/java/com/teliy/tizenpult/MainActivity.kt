@@ -461,11 +461,13 @@ class MainActivity : AppCompatActivity() {
     private fun openApps() = sendOrToast { requestApps() }
 
     /**
-     * Тачпад (v2.8). Режим зависит от протокола текущего сеанса:
-     *  - Tizen (wss/ws) — настоящая мышь: палец двигает курсор ТВ (ProcessMouseDevice,
-     *    логический экран 1920×1080), тап — LeftClick;
+     * Тачпад (v2.9). Режим зависит от протокола текущего сеанса:
+     *  - Tizen (wss/ws) — мышь: свайп шлёт ДЕЛЬТЫ сдвига курсора (ProcessMouseDevice,
+     *    семантика официальной либы Samsung — currentMoveDelta), тап — LeftClick;
      *  - старые ТВ (smart/legacy) — мыши в протоколе нет: свайп — стрелки,
      *    тап — OK (KEY_ENTER).
+     *  Для Tizen — тумблер «мышь ⇄ стрелки»: если прошивка игнорирует мышь,
+     *  стрелки в браузере ТВ тоже двигают указатель.
      */
     @SuppressLint("SetTextI18n")
     private fun showTouchpad() {
@@ -474,7 +476,8 @@ class MainActivity : AppCompatActivity() {
             toast("Сначала подключитесь к ТВ")
             return
         }
-        val mouseMode = r.supportsMouse()
+        val mouseSupported = r.supportsMouse()
+        var padMouse = mouseSupported
         val d = resources.displayMetrics.density
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -483,10 +486,10 @@ class MainActivity : AppCompatActivity() {
 
         val pad = TouchpadView(
             this,
-            mouseMode = mouseMode,
-            onMove = { x, y -> sendOrToast { sendMouseMove(x, y) } },
+            mouseMode = padMouse,
+            onMove = { dx, dy -> sendOrToast { sendMouseMove(dx, dy) } },
             onClick = {
-                sendOrToast { if (mouseMode) sendMouseClick() else sendKey("KEY_ENTER") }
+                sendOrToast { if (padMouse) sendMouseClick() else sendKey("KEY_ENTER") }
             },
             onArrow = { key -> sendOrToast { sendKey(key) } }
         )
@@ -495,13 +498,13 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (270 * d).toInt())
         )
 
+        val mouseHint = "Курсор на экране ТВ: ведите пальцем — он повторит движение, тап — клик. Если курсор не двигается — нажмите «Режим: стрелки» (в браузере ТВ стрелки тоже двигают указатель)."
+        val arrowsHint = "Режим стрелок: свайп в сторону = стрелки (в браузере ТВ они двигают указатель), тап = OK."
         val hint = TextView(this).apply {
             textSize = 12f
             setPadding(0, (8 * d).toInt(), 0, 0)
-            text = if (mouseMode)
-                "Курсор на экране ТВ: ведите пальцем, тап — клик. Пропали кнопки пульта — они на главном экране. Если курсор не появился — напишите в чат, подберём координаты."
-            else
-                "Этот ТВ не поддерживает мышь — режим стрелок: свайп в сторону = перемещение, тап = OK."
+            text = if (mouseSupported) mouseHint
+            else "Этот ТВ не поддерживает мышь — режим стрелок: свайп в сторону = перемещение, тап = OK."
         }
         box.addView(hint)
 
@@ -518,13 +521,24 @@ class MainActivity : AppCompatActivity() {
         row.addView(keyBtn("OK", "KEY_ENTER"), lp)
         box.addView(row)
 
-        val modeNote = if (mouseMode)
-            "режим мыши (курсор ТВ 1920×1080, тап = LeftClick)"
-        else
-            "режим стрелок (мышь протоколом не поддержана)"
-        appendLog("— тачпад: $modeNote —")
+        // Тумблер режима для Tizen — страховка: если прошивка игнорирует ProcessMouseDevice
+        if (mouseSupported) {
+            box.addView(Button(this).apply {
+                textSize = 12f
+                text = "Режим: мышь"
+                setOnClickListener {
+                    padMouse = !padMouse
+                    pad.setMode(padMouse)
+                    text = if (padMouse) "Режим: мышь" else "Режим: стрелки"
+                    hint.text = if (padMouse) mouseHint else arrowsHint
+                    appendLog("— тачпад: ${if (padMouse) "режим мыши (Move-дельты)" else "режим стрелок"} —")
+                }
+            })
+        }
+
+        appendLog("— тачпад: ${if (padMouse) "режим мыши (Move-дельты, тап = LeftClick)" else "режим стрелок (мышь протоколом не поддержана)"} —")
         AlertDialog.Builder(this)
-            .setTitle(if (mouseMode) "Тачпад — мышь на ТВ" else "Тачпад — стрелки")
+            .setTitle(if (mouseSupported) "Тачпад — мышь на ТВ" else "Тачпад — стрелки")
             .setView(box)
             .setNegativeButton("Закрыть", null)
             .show()

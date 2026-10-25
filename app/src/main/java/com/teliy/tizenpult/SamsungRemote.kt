@@ -1,6 +1,5 @@
 package com.teliy.tizenpult
 
-import android.os.SystemClock
 import android.util.Base64
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -331,6 +330,11 @@ class SamsungRemote(
                 }
             }
 
+            // ТВ включает/выключает touch-режим (браузер и приложения с курсором).
+            // Это уведомление о состоянии: протокол мыши (ProcessMouseDevice) не меняется.
+            "ms.remote.touchEnable" -> log("ТВ: touch-режим включён — текущее приложение принимает мышь/тачпад")
+            "ms.remote.touchDisable" -> log("ТВ: touch-режим выключен")
+
             else -> log("событие: ${obj.optString("event")}")
         }
     }
@@ -405,15 +409,20 @@ class SamsungRemote(
     fun supportsMouse(): Boolean = connected && !isLegacy() && !isSmart()
 
     /**
-     * Переместить курсор ТВ (тачпад, режим мыши).
-     * Формат ProcessMouseDevice по эталону samsungctl / samsung-tv-ws-api;
-     * координаты абсолютные, логический экран 1920×1080 (Tizen UI-канвас).
+     * Сдвинуть курсор ТВ (тачпад, режим мыши).
+     *
+     * ВАЖНО (v2.9): Position.x/y — это ДЕЛЬТА сдвига, а НЕ абсолютная позиция!
+     * Реверс официальной библиотеки Samsung multiscreen (SmartThings/Smart View,
+     * класс RemoteControl): в Position кладётся currentMoveDelta — сдвиг с прошлого
+     * кадра. v2.8 слала абсолютные координаты 1920×1080 — ТВ трактовал их как сдвиг,
+     * курсор улетал за край экрана и замирал (симптом: «курсор пропал, движения нет»).
+     * Time — строка epoch-миллисекунд, как в офиц. либе ("" + System.currentTimeMillis()).
      * Move-кадры в лог не пишутся (тихо) — до 25 кадров/с забили бы журнал мгновенно.
      */
-    fun sendMouseMove(x: Int, y: Int) {
+    fun sendMouseMove(dx: Int, dy: Int) {
         if (!supportsMouse()) return
         if (!mouseMoveLogged) {
-            log("▶ мышь: ProcessMouseDevice Move — курсор ($x,$y); дальнейшие Move в журнал не пишутся")
+            log("▶ мышь: ProcessMouseDevice Move — дельта ($dx,$dy); дальнейшие Move в журнал не пишутся")
             mouseMoveLogged = true
         }
         send(JSONObject().apply {
@@ -421,9 +430,9 @@ class SamsungRemote(
             put("params", JSONObject().apply {
                 put("Cmd", "Move")
                 put("Position", JSONObject().apply {
-                    put("x", x)
-                    put("y", y)
-                    put("Time", SystemClock.elapsedRealtime().toString())
+                    put("x", dx)
+                    put("y", dy)
+                    put("Time", System.currentTimeMillis().toString())
                 })
                 put("TypeOfRemote", "ProcessMouseDevice")
             })
