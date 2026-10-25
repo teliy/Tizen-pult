@@ -295,10 +295,13 @@ class MainActivity : AppCompatActivity() {
     /**
      * Подключение с автоопределением протокола:
      *  - wss:8002 с токеном — Tizen 2018+ (UE43AU9000 и другие новые);
-     *  - ws:8001 без TLS — Tizen 2016–2017 и часть моделей 2014–2015;
-     *  - legacy TCP:55000 — Smart TV 2011–2015 (UE48H6800 и т.п.), обычный и AES.
-     * Проверяем открытые порты, пробуем по порядку (сохранённый — первым),
-     * рабочий протокол запоминается в prefs «proto:<ip>».
+     *  - ws:8001 без TLS — Tizen 2016–2017 (с пробой полноценности: старые ТВ
+     *    подключение принимают, но управление отклоняют);
+     *  - legacy TCP:55000 — Smart TV 2011–2015, обычный и AES (пробуется всегда:
+     *    если порт закрыт, отказ приходит мгновенно);
+     *  - smart — Smart View 2.0 (8080/8000): Orsay H-серия 2014, часть J 2015
+     *    (UE48H6800 и т.п.) — при первом подключении на ТВ покажут PIN.
+     * Рабочий протокол запоминается в prefs «proto:<ip>».
      */
     private fun connectToHost(host: String) {
         if (connecting) {
@@ -317,18 +320,24 @@ class MainActivity : AppCompatActivity() {
                 val p8002 = TvDiscovery.portOpen(host, 8002, 1500)
                 val p8001 = TvDiscovery.portOpen(host, 8001, 1500)
                 val p55000 = TvDiscovery.portOpen(host, 55000, 1500)
+                // Smart View 2.0 ищем только у ТВ без Tizen-TLS (экономим время на новых)
+                var p8080 = false
+                var p8000 = false
+                if (!p8002) {
+                    p8080 = TvDiscovery.portOpen(host, 8080, 1200)
+                    p8000 = TvDiscovery.portOpen(host, 8000, 1200)
+                }
                 runOnUiThread {
-                    appendLog("порты ТВ: 8002=$p8002 (Tizen TLS), 8001=$p8001 (Tizen), 55000=$p55000 (старый)")
+                    appendLog("порты ТВ: 8002=$p8002 (Tizen TLS), 8001=$p8001 (Tizen), 55000=$p55000 (старый), 8080=$p8080, 8000=$p8000 (Smart View 2.0)")
                 }
 
-                // 2. Порядок проб: сохранённый протокол — первым, затем остальные открытые
+                // 2. Порядок проб: сохранённый протокол — первым, затем остальные
                 val caps = mutableListOf<String>()
                 if (p8002) caps.add("wss")
                 if (p8001) caps.add("ws")
-                if (p55000) {
-                    caps.add("legacy")
-                    caps.add("legacy-aes")
-                }
+                caps.add("legacy")
+                caps.add("legacy-aes")
+                if (p8080 || p8000) caps.add("smart")
                 val saved = prefs.getString("proto:$host", null)
                 if (!saved.isNullOrBlank() && caps.remove(saved)) caps.add(0, saved)
 
@@ -345,7 +354,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 runOnUiThread {
                     statusView.text = "Не удалось подключиться — см. журнал"
-                    appendLog("✖ ни один протокол не подключился (8002/8001/55000)")
+                    appendLog("✖ ни один протокол не подключился (8002/8001/55000/8080)")
                 }
             } finally {
                 connecting = false
@@ -353,7 +362,7 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
-    /** Одна попытка: создаем клиент и ждём подтверждения сеанса (до 8/30 с) */
+    /** Одна попытка: создаем клиент и ждём подтверждения сеанса (до 8/30/150 с) */
     private fun tryProto(host: String, proto: String): Boolean {
         runOnUiThread {
             appendLog("— пробую протокол $proto —")
@@ -362,25 +371,39 @@ class MainActivity : AppCompatActivity() {
         val r = SamsungRemote(
             host = host,
             proto = proto,
-            token = prefs.getString("token:$host", null) ?: prefs.getString("token", null),
+            token = prefs.getString("token:$host", null),
+            smartAuth = prefs.getString("sv:$host", null),
+            deviceId = deviceUuid(),
             onStatus = { s -> runOnUiThread { statusView.text = s } },
-            onToken = { t -> prefs.edit().putString("token:$host", t).putString("token", t).apply() },
+            onToken = { t -> prefs.edit().putString("token:$host", t).apply() },
             onApps = { apps -> runOnUiThread { showApps(apps) } },
-            onLog = { s -> runOnUiThread { appendLog(s) } }
+            onLog = { s -> runOnUiThread { appendLog(s) } },
+            onSmartAuth = { auth -> prefs.edit().putString("sv:$host", auth).apply() },
+            onPin = { retry, submit -> showPinDialog(retry, submit) }
         )
         remote?.close()
         remote = r
         r.connect()
 
+        // smart: сопряжение с вводом PIN занимает время — даём до 5 минут
+        val deadAfter = if (proto == "smart") 300_000L else 8_000L
+        val aliveAfter = if (proto == "smart") 330_000L else 30_000L
         val t0 = System.currentTimeMillis()
         while (true) {
             if (r.isConnected()) return true
+            if (r.isRejected()) {
+                // ws://8001 отклонён ТВ — убираем его из сохранённых, чтобы не пробовать первым
+                if (prefs.getString("proto:$host", null) == "ws") {
+                    prefs.edit().remove("proto:$host").apply()
+                }
+                return false
+            }
             val elapsed = System.currentTimeMillis() - t0
             // 30 с — если транспорт жив (например, ТВ ждёт «Разрешить» на экране),
             // 8 с — если транспорт так и не поднялся
             if (r.isTransportAlive()) {
-                if (elapsed > 30000) break
-            } else if (elapsed > 8000) {
+                if (elapsed > aliveAfter) break
+            } else if (elapsed > deadAfter) {
                 break
             }
             Thread.sleep(250)
@@ -388,6 +411,34 @@ class MainActivity : AppCompatActivity() {
         val ok = r.isConnected()
         if (!ok) r.close()
         return ok
+    }
+
+    /** Стабильный UUID устройства для сопряжения Smart View 2.0 (prefs «svdevid») */
+    private fun deviceUuid(): String {
+        var id = prefs.getString("svdevid", null)
+        if (id.isNullOrBlank()) {
+            id = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString("svdevid", id).apply()
+        }
+        return id
+    }
+
+    /** Диалог ввода PIN с экрана ТВ (сопряжение Smart View 2.0) */
+    private fun showPinDialog(retry: Boolean, submit: (String?) -> Unit) {
+        runOnUiThread {
+            val input = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_NUMBER
+                hint = "1234"
+            }
+            AlertDialog.Builder(this)
+                .setTitle(if (retry) "Неверный PIN — попробуйте ещё раз" else "Введите PIN с экрана ТВ")
+                .setMessage("На экране телевизора отображён 4-значный PIN-код. Введите его здесь, чтобы разрешить пульту управление ТВ.")
+                .setView(input)
+                .setPositiveButton("OK") { _, _ -> submit(input.text.toString().trim()) }
+                .setNegativeButton("Отмена") { _, _ -> submit(null) }
+                .setOnCancelListener { submit(null) }
+                .show()
+        }
     }
 
     private fun sendText() {

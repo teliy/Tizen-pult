@@ -30,8 +30,11 @@ import javax.net.ssl.X509TrustManager
  *
  * Поддерживаемые протоколы (proto):
  *  - «wss» — wss://host:8002 с токеном: Tizen 2018+ (UE43AU9000 и другие новые);
- *  - «ws»  — ws://host:8001 без TLS: Tizen 2016–2017, часть моделей 2014–2015;
- *  - «legacy» / «legacy-aes» — TCP 55000: Smart TV 2011–2015 (см. LegacyRemote).
+ *  - «ws»  — ws://host:8001 без TLS: Tizen 2016–2017 (с пробой полноценности сеанса:
+ *    старые Orsay-ТВ 2014–2015 подключение принимают, но управление отклоняют);
+ *  - «legacy» / «legacy-aes» — TCP 55000: Smart TV 2011–2015 (см. LegacyRemote);
+ *  - «smart» — Smart View 2.0 (socket.io :8000 + PIN-сопряжение :8080): Orsay
+ *    H-серия 2014 и часть J 2015 (UE48H6800 и т.п.), см. SmartViewRemote.
  *
  * Все входящие/исходящие кадры дублируются в onLog — для диагностики на экране.
  */
@@ -39,15 +42,20 @@ class SamsungRemote(
     private val host: String,
     private val proto: String = "wss",
     private val token: String?,
+    private val smartAuth: String? = null,      // «tokenHex|sessionId» для proto=«smart»
+    private val deviceId: String = "",          // UUID для сопряжения Smart View 2.0
     private val onStatus: (String) -> Unit,
     private val onToken: (String) -> Unit,
     private val onApps: (List<AppInfo>) -> Unit,
-    private val onLog: (String) -> Unit
+    private val onLog: (String) -> Unit,
+    private val onSmartAuth: ((String) -> Unit)? = null,
+    private val onPin: ((retry: Boolean, submit: (String?) -> Unit) -> Unit)? = null
 ) {
     data class AppInfo(val appId: String, val name: String)
 
     private var ws: WebSocket? = null
     private var legacy: LegacyRemote? = null
+    private var smart: SmartViewRemote? = null
 
     /** Сеанс подтверждён ТВ (ms.channel.connect / handshake 55000) */
     @Volatile private var connected = false
@@ -55,15 +63,25 @@ class SamsungRemote(
     /** Транспорт открыт (WS upgrade / TCP 55000) — можно ждать «Разрешить» на ТВ */
     @Volatile private var transportAlive = false
 
+    /** ws://8001 проверен и отклонён ТВ (старая прошивка Orsay) — сеанс бесполезен */
+    @Volatile private var rejected = false
+
+    /** Проба API после ws-подключения: ждали ответы на emits (см. connect) */
+    @Volatile private var wsProbeActive = false
+    @Volatile private var wsProbeErrors = 0
+
     fun isConnected(): Boolean = connected
     fun isTransportAlive(): Boolean = transportAlive
+    fun isRejected(): Boolean = rejected
     private fun isLegacy(): Boolean = proto == "legacy" || proto == "legacy-aes"
+    private fun isSmart(): Boolean = proto == "smart"
 
     // Состояние сеанса (читаются/пишутся из фоновых потоков)
     @Volatile private var launchAck = false         // ТВ подтвердил ed.apps.launch
     @Volatile private var appsReceived = false      // ТВ прислал список приложений
     @Volatile private var imeSeen = false           // клавиатура на ТВ открывалась в сеансе
     @Volatile private var textBroadcastSent = false // broadcast textReceived — 1 раз за сеанс
+    @Volatile private var unauthRetried = false     // уже переподключались без токена
     /** Буфер для requestApps: WS-ответы собираются сюда, а не уходят в UI поодиночке */
     @Volatile private var pendingApps: MutableList<AppInfo>? = null
 
@@ -100,6 +118,10 @@ class SamsungRemote(
         appsReceived = false
         imeSeen = false
         textBroadcastSent = false
+        unauthRetried = false
+        rejected = false
+        wsProbeActive = false
+        wsProbeErrors = 0
 
         if (isLegacy()) {
             val lr = LegacyRemote(
@@ -120,14 +142,41 @@ class SamsungRemote(
             return
         }
 
+        if (isSmart()) {
+            val sv = SmartViewRemote(
+                host = host,
+                savedAuth = smartAuth,
+                deviceId = deviceId,
+                onStatus = onStatus,
+                onLog = onLog,
+                onAuth = { ok -> connected = ok },
+                onTransport = { up -> transportAlive = up },
+                onSavedAuth = { auth -> onSmartAuth?.invoke(auth) },
+                onClosed = {
+                    connected = false
+                    transportAlive = false
+                    onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
+                },
+                requestPin = { retry, submit -> onPin?.invoke(retry, submit) }
+            )
+            smart = sv
+            sv.connect()
+            return
+        }
+
+        openWs(withToken = !token.isNullOrBlank())
+    }
+
+    /** Открытие Tizen-WS (wss:8002 / ws:8001); withToken=false — после unauthorized */
+    private fun openWs(withToken: Boolean) {
         val scheme = if (proto == "ws") "ws" else "wss"
         val port = if (proto == "ws") 8001 else 8002
         val name = Base64.encodeToString("Tizen Pult".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
         var url = "$scheme://$host:$port/api/v2/channels/samsung.remote.control?name=$name"
-        val withToken = !token.isNullOrBlank()
-        if (withToken) url += "&token=$token"
+        val usingToken = withToken && !token.isNullOrBlank()
+        if (usingToken) url += "&token=$token"
 
-        log(if (withToken) "Подключение к $scheme://$host:$port (с сохранённым токеном)" else "Подключение к $scheme://$host:$port (без токена — ТВ покажет запрос)")
+        log(if (usingToken) "Подключение к $scheme://$host:$port (с сохранённым токеном)" else "Подключение к $scheme://$host:$port (без токена — ТВ покажет запрос)")
 
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
@@ -177,18 +226,53 @@ class SamsungRemote(
                     log("✔ Авторизация пройдена, токен получен (${t.take(3)}...) и сохранён")
                     onToken(t)
                 }
+                // Проба полноценности сеанса для ws://8001: старые ТВ (Orsay 2014-2015)
+                // принимают подключение, но отклоняют ms.remote.control. Сразу шлём два
+                // API-запроса: если оба вернут ms.error — сеанс бесполезен, маркируем reject.
+                if (proto == "ws") {
+                    wsProbeActive = true
+                    wsProbeErrors = 0
+                    send(JSONObject().apply {
+                        put("method", "ms.channel.emit")
+                        put("params", JSONObject().apply {
+                            put("event", "ed.installedApp.get")
+                            put("to", "host")
+                        })
+                    })
+                    send(JSONObject().apply {
+                        put("method", "ms.channel.emit")
+                        put("params", JSONObject().apply {
+                            put("event", "ed.edenAppList.get")
+                            put("to", "host")
+                        })
+                    })
+                }
                 onStatus("Подключено к ТВ ✔")
             }
 
             "ms.channel.unauthorized" -> {
                 connected = false
                 log("ТВ отклонил доступ (unauthorized)")
-                onStatus("Нажмите «Подключ.» ещё раз и выберите «Разрешить» на ТВ")
+                // Чужой/устаревший токен (например, унаследованный от другой прошивки)
+                // — переподключаемся без него, ТВ покажет «Разрешить»
+                if (!token.isNullOrBlank() && !unauthRetried) {
+                    unauthRetried = true
+                    log("Переподключаюсь без токена — подтвердите «Разрешить» на ТВ")
+                    try { ws?.close(1000, "retry") } catch (_: Exception) {}
+                    openWs(withToken = false)
+                } else {
+                    onStatus("Нажмите «Подключ.» ещё раз и выберите «Разрешить» на ТВ")
+                }
             }
 
             "ed.installedApp.get", "ed.edenAppList.get" -> {
                 appsReceived = true
                 val apps = parseApps(obj)
+                if (wsProbeActive) {
+                    // Проба ws://8001 пройдена: ТВ отвечает как полноценный Tizen
+                    wsProbeActive = false
+                    log("проба API: ТВ ответил списком (${apps.size} шт.) — сеанс полноценный")
+                }
                 val buf = pendingApps
                 if (buf != null) {
                     buf.addAll(apps)
@@ -216,6 +300,22 @@ class SamsungRemote(
             "ms.error" -> {
                 val msg = obj.optJSONObject("data")?.optString("message")
                 log("!! ТВ сообщил об ошибке: ${msg ?: obj.toString().take(200)}")
+                if (wsProbeActive) {
+                    val m = msg ?: ""
+                    val orsayLike = m.contains("unrecognized", true) ||
+                        m.contains("session' of null", true) || m.contains("session of null", true)
+                    if (orsayLike) {
+                        wsProbeErrors++
+                        if (wsProbeErrors >= 2) {
+                            wsProbeActive = false
+                            rejected = true
+                            log("✖ оба API-запроса отклонены — ws://8001 не поддерживает управление (старая прошивка). Пробую следующий протокол")
+                            try { ws?.close(1000, "probe") } catch (_: Exception) {}
+                            connected = false
+                            transportAlive = false
+                        }
+                    }
+                }
             }
 
             else -> log("событие: ${obj.optString("event")}")
@@ -268,6 +368,10 @@ class SamsungRemote(
 
     /** Нажатие кнопки пульта, например KEY_VOLUP, KEY_POWER, KEY_HDMI */
     fun sendKey(key: String) {
+        if (isSmart()) {
+            smart?.sendKey(key)
+            return
+        }
         if (isLegacy()) {
             legacy?.sendKey(key)
             return
@@ -295,8 +399,8 @@ class SamsungRemote(
      * фокусе). Открытие/закрытие видно в журнале: ⌨ ms.remote.imeStart / ms.remote.imeEnd.
      */
     fun sendTextSmart(text: String) {
-        if (isLegacy()) {
-            log("Ввод текста недоступен по старому протоколу (55000)")
+        if (isLegacy() || isSmart()) {
+            log("Ввод текста недоступен по старому протоколу (${if (isSmart()) "Smart View 2.0" else "55000"})")
             onStatus("На старых ТВ (до 2016) ввод текста недоступен")
             return
         }
@@ -345,8 +449,8 @@ class SamsungRemote(
      * Подтверждение ТВ — ответное событие ed.apps.launch с кодом 200.
      */
     fun launchApp(appId: String) {
-        if (isLegacy()) {
-            log("Запуск приложений недоступен по старому протоколу (55000)")
+        if (isLegacy() || isSmart()) {
+            log("Запуск приложений недоступен по старому протоколу (${if (isSmart()) "Smart View 2.0" else "55000"})")
             onStatus("На старых ТВ (до 2016) запуск приложений недоступен")
             return
         }
@@ -416,8 +520,8 @@ class SamsungRemote(
      * REST-список из 2 приложений («fetchable») перекрывал всё остальное.
      */
     fun requestApps() {
-        if (isLegacy()) {
-            log("Старый протокол (55000) не отдаёт список приложений — доступны кнопки пульта")
+        if (isLegacy() || isSmart()) {
+            log("Старый протокол (${if (isSmart()) "Smart View 2.0" else "55000"}) не отдаёт список приложений — доступны кнопки пульта")
             onStatus("На старых ТВ (до 2016) список приложений недоступен")
             onApps(emptyList())
             return
@@ -590,9 +694,9 @@ class SamsungRemote(
 
     /**
      * Умное выключение: разные прошивки принимают разные ключи.
-     * На моделях 2021+ KEY_POWER часто игнорируется — работает KEY_POWEROFF;
-     * на части новых прошивок наоборот. Отправляем по очереди и после каждой
-     * попытки проверяем, отвечает ли ТВ (REST 8001): перестал отвечать — выключился.
+     * 1) KEY_POWEROFF (2021+ часто только он); 2) KEY_POWER; 3) KEY_POWERTOGGLE;
+     * 4) пара Press+Release (часть прошивок игнорирует одиночный Click).
+     * После каждой попытки проверяем, отвечает ли ТВ (REST 8001): перестал — выключился.
      * Для старого протокола (55000) работает KEY_POWER.
      */
     fun powerOffSmart() {
@@ -610,10 +714,42 @@ class SamsungRemote(
                     onStatus("ТВ выключен — POWER снова включит его по сети")
                     return@Thread
                 }
-                log("$k не выключил ТВ — пробую следующий ключ")
+                log("$k не выключил ТВ — пробую следующий вариант")
+            }
+            // 4-я попытка: Press + Release (Click игнорируется частью прошивок)
+            log("POWER: отправляю KEY_POWER (Press+Release)…")
+            sendPressRelease("KEY_POWER")
+            Thread.sleep(2500)
+            if (TvDiscovery.verify(host, 1200) == null) {
+                log("✔ ТВ выключился (сработал Press+Release)")
+                onStatus("ТВ выключен — POWER снова включит его по сети")
+                return@Thread
             }
             onStatus("ТВ не отреагировал на POWER — подробности в журнале")
         }.start()
+    }
+
+    /** Пара Cmd:Press → 150 мс → Cmd:Release (нужна части новых прошивок) */
+    private fun sendPressRelease(key: String) {
+        send(JSONObject().apply {
+            put("method", "ms.remote.control")
+            put("params", JSONObject().apply {
+                put("Cmd", "Press")
+                put("DataOfCmd", key)
+                put("Option", "false")
+                put("TypeOfRemote", "SendRemoteKey")
+            })
+        })
+        Thread.sleep(150)
+        send(JSONObject().apply {
+            put("method", "ms.remote.control")
+            put("params", JSONObject().apply {
+                put("Cmd", "Release")
+                put("DataOfCmd", key)
+                put("Option", "false")
+                put("TypeOfRemote", "SendRemoteKey")
+            })
+        })
     }
 
     fun close() {
@@ -622,6 +758,11 @@ class SamsungRemote(
         } catch (_: Exception) {
         }
         legacy = null
+        try {
+            smart?.close()
+        } catch (_: Exception) {
+        }
+        smart = null
         try {
             ws?.close(1000, "bye")
         } catch (_: Exception) {
