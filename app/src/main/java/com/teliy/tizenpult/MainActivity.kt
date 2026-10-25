@@ -17,6 +17,7 @@ import android.view.ViewGroup
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -579,7 +580,16 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showApps(apps: List<SamsungRemote.AppInfo>, catalog: Boolean = false) {
-        if (apps.isEmpty()) {
+        // Свои запомненные приложения всегда добавляем к результату ТВ (без дублей по имени):
+        // пользователь может расширить список даже на прошивке без перечисления
+        val manual = savedManualApps()
+        val merged = mutableListOf<SamsungRemote.AppInfo>()
+        val seen = mutableSetOf<String>()
+        for (a in manual + apps) {
+            val key = a.name.lowercase(Locale.ROOT).trim()
+            if (key.isNotEmpty() && seen.add(key)) merged.add(a)
+        }
+        if (merged.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("Список приложений")
                 .setMessage("ТВ не выдал список приложений.\nПодробности по каждой стратегии — в «Журнале связи с ТВ».")
@@ -588,32 +598,102 @@ class MainActivity : AppCompatActivity() {
                 .show()
             return
         }
-        val names = apps.map { "${it.name}\n(${it.appId})" }.toTypedArray()
-        val title = if (catalog) "Каталог приложений (${apps.size}) — запуск проверит установку"
-                    else "Приложения на ТВ (${apps.size})"
+        val names = merged.map { "${it.name}\n(${it.appId})" }.toTypedArray()
+        val title = when {
+            catalog && manual.isNotEmpty() -> "Каталог + ваши приложения (${merged.size}) — запуск проверит установку"
+            catalog -> "Каталог приложений (${merged.size}) — запуск проверит установку"
+            manual.isNotEmpty() -> "Приложения на ТВ + ваши (${merged.size})"
+            else -> "Приложения на ТВ (${merged.size})"
+        }
         AlertDialog.Builder(this)
             .setTitle(title)
             .setItems(names) { _, i ->
-                sendOrToast { launchApp(apps[i].appId, apps[i].name) }
+                sendOrToast { launchApp(merged[i].appId, merged[i].name) }
             }
             .setNeutralButton("Своё приложение…") { _, _ -> showManualAppDialog() }
             .setNegativeButton("Закрыть", null)
             .show()
     }
 
-    /** Ручной запуск приложения по ID или имени (для приложений, которых нет в каталоге) */
+    /** IP текущего ТВ (как его пишет кнопка «Подключ.» в prefs «host») */
+    private fun currentTvHost(): String {
+        return prefs.getString("host", null) ?: ipInput.text.toString().trim()
+    }
+
+    /** Свои запомненные приложения текущего ТВ (prefs «myapps:<ip>», JSON-массив) */
+    private fun savedManualApps(): List<SamsungRemote.AppInfo> {
+        val host = currentTvHost()
+        if (host.isEmpty()) return emptyList()
+        val raw = prefs.getString("myapps:$host", null) ?: return emptyList()
+        val out = mutableListOf<SamsungRemote.AppInfo>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.optString("id")
+                val nm = o.optString("name")
+                if (id.isNotBlank()) out.add(SamsungRemote.AppInfo(id, nm.ifBlank { id }))
+            }
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
+    /** Запомнить приложение, запущенное вручную (без дублей по ID и имени) */
+    private fun rememberManualApp(id: String, name: String) {
+        val host = currentTvHost()
+        if (host.isEmpty()) return
+        val list = savedManualApps().toMutableList()
+        val key = name.lowercase(Locale.ROOT).trim()
+        list.removeAll { it.appId == id || it.name.lowercase(Locale.ROOT).trim() == key }
+        list.add(SamsungRemote.AppInfo(id, name))
+        val arr = JSONArray()
+        for (a in list) arr.put(JSONObject().put("id", a.appId).put("name", a.name))
+        prefs.edit().putString("myapps:$host", arr.toString()).apply()
+    }
+
+    /** Ручной запуск приложения по ID или имени + запоминание в списке приложений */
     private fun showManualAppDialog() {
+        val saved = savedManualApps()
         val input = EditText(this)
-        input.hint = "например 1112990019 или YouTube"
-        AlertDialog.Builder(this)
+        input.hint = "ID или DIAL-имя, например 1112990019 или YouTube"
+        input.inputType = InputType.TYPE_CLASS_TEXT
+        val nameInput = EditText(this)
+        nameInput.hint = "Название для списка (необязательно)"
+        nameInput.inputType = InputType.TYPE_CLASS_TEXT
+        val remember = CheckBox(this)
+        remember.text = "Запомнить в списке приложений"
+        remember.isChecked = true
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(input)
+            addView(nameInput)
+            addView(remember)
+        }
+        val dlg = AlertDialog.Builder(this)
             .setTitle("Запуск по ID/имени приложения")
-            .setView(input)
+            .setView(box)
             .setPositiveButton("Запустить") { _, _ ->
                 val v = input.text.toString().trim()
-                if (v.isNotEmpty()) sendOrToast { launchApp(v) }
+                if (v.isNotEmpty()) {
+                    val nm = nameInput.text.toString().trim()
+                    sendOrToast { launchApp(v, nm.ifEmpty { null }) }
+                    if (remember.isChecked) {
+                        rememberManualApp(v, nm.ifEmpty { v })
+                        toast("Добавлено в список приложений этого ТВ")
+                    }
+                }
             }
             .setNegativeButton("Отмена", null)
-            .show()
+        if (saved.isNotEmpty()) {
+            dlg.setNeutralButton("Забыть свои (${saved.size})") { _, _ ->
+                prefs.edit().remove("myapps:${currentTvHost()}").apply()
+                toast("Свои приложения забыты — список ТВ без них")
+            }
+        }
+        dlg.show()
     }
 
     /**

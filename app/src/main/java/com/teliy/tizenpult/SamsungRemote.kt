@@ -89,6 +89,9 @@ class SamsungRemote(
     /** Буфер для requestApps: WS-ответы собираются сюда, а не уходят в UI поодиночке */
     @Volatile private var pendingApps: MutableList<AppInfo>? = null
 
+    /** Буфер для requestAppsOrsay: ed-события, пришедшие через smart-канал */
+    @Volatile private var pendingSmartApps: MutableList<AppInfo>? = null
+
     /** ТВ использует самоподписанный сертификат — доверяем ему в рамках локальной сети */
     private val trustManager: X509TrustManager = object : X509TrustManager {
         override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
@@ -161,7 +164,8 @@ class SamsungRemote(
                     transportAlive = false
                     onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
                 },
-                requestPin = { retry, submit -> onPin?.invoke(retry, submit) }
+                requestPin = { retry, submit -> onPin?.invoke(retry, submit) },
+                onFrame = { dec -> onSmartFrame(dec) }
             )
             smart = sv
             sv.connect()
@@ -323,6 +327,28 @@ class SamsungRemote(
             }
 
             else -> log("событие: ${obj.optString("event")}")
+        }
+    }
+
+    /**
+     * Расшифрованный кадр smart-канала (Orsay). В эталоне у callCommon известен
+     * только plugin RemoteControl (клавиши), но часть прошивок может отвечать
+     * и на ed.*-события — пробуем и их: если в кадре пришло событие списка
+     * приложений, разбираем его так же, как на Tizen.
+     */
+    private fun onSmartFrame(dec: String) {
+        val evt = Regex("\"event\"\\s*:\\s*\"([^\"]+)\"").find(dec)?.groupValues?.get(1) ?: return
+        if (evt != "ed.installedApp.get" && evt != "ed.edenAppList.get") return
+        val apps = try { parseApps(JSONObject(dec)) } catch (_: Exception) { emptyList() }
+        if (apps.isEmpty()) return
+        appsReceived = true
+        val buf = pendingSmartApps
+        if (buf != null) {
+            buf.addAll(apps)
+            log("smart-канал: ed-событие принесло список +${apps.size} шт.")
+        } else {
+            log("smart-канал: ed-событие принесло список ${apps.size} шт.")
+            onApps(apps, false)
         }
     }
 
@@ -630,36 +656,80 @@ class SamsungRemote(
     }
 
     /**
-     * Orsay (2011–2015): готового LIST-эндпоинта протокол не имеет (в эталоне
-     * xchwarze v3 encrypted-приложения отсутствуют вовсе). Стратегия v2.6:
-     * 1) корень /ws/apps/ — на части прошивок отдаёт XML-список (парсим, если придёт);
-     * 2) проба известных ID + DIAL-имён (GET /ws/apps/YouTube подтверждён на Orsay
-     *    J-серии 2015 — home-assistant/core#117694);
-     * 3) если ничего не подтвердилось — КАТАЛОГ известных приложений: каждый запуск
-     *    POST-ом честно проверит установку (GET может 404-ить там, где POST сработает).
+     * Orsay (2011–2015): LIST-эндпоинта протокол не имеет (в эталоне xchwarze
+     * encrypted-приложения отсутствуют вовсе). v2.7 — СЛИЯНИЕ всех стратегий
+     * (как на Tizen), а не каскад с остановкой на первом непустом:
+     *  1) ed.installedApp.get / ed.edenAppList.get через smart-канал — часть
+     *     прошивок 2015+ может отвечать на Tizen-события (кадр в журнал);
+     *  2) корень /ws/apps/ — на части прошивок отдаёт XML-список DIAL-приложений
+     *     (тело пишем в журнал всегда — для диагностики);
+     *  3) /api/v2/applications на 8001→8002 — у H-серии частично жив /api/v2,
+     *     код ответа виден в журнале;
+     *  4) пробы DIAL-имён (GET /ws/apps/YouTube подтверждён на Orsay —
+     *    home-assistant/core#117694) и известных ID параллельно в 8 потоков.
+     * Если ничего не подтвердилось — КАТАЛОГ известных приложений: каждый запуск
+     * POST-ом честно проверит установку (GET может 404-ить там, где POST сработает).
      */
     private fun requestAppsOrsay() {
         Thread {
             val port = orsayPort()
-            onStatus("Проверяю известные приложения на ТВ (REST :$port)…")
-            log("Orsay: приложения — корень /ws/apps/, затем ${ORSAY_KNOWN_APPS.size} ID + DIAL-имена…")
+            onStatus("Ищу приложения на ТВ (REST :$port)…")
+            log("Orsay: приложения — smart-канал, корень /ws/apps/, /api/v2, ${ORSAY_DIAL_NAMES.size} DIAL-имён + ${ORSAY_KNOWN_APPS.size} ID…")
 
-            // 1) корень /ws/apps/ (ответ прошивки виден в журнале — диагностика)
+            val found = mutableListOf<AppInfo>()
+            val seenIds = mutableSetOf<String>()
+            val seenNames = mutableSetOf<String>()
+            fun addApp(a: AppInfo) {
+                val nm = a.name.ifBlank { a.appId }
+                if (seenIds.add(a.appId) && seenNames.add(nm.lowercase(Locale.ROOT))) {
+                    found.add(AppInfo(a.appId, nm))
+                }
+            }
+
+            // Стратегия 1: ed.*-события через smart-канал (2,5 с на ответ ТВ)
+            var smartCount = 0
+            val s = smart
+            if (s != null && isConnected()) {
+                val smartApps = mutableListOf<AppInfo>()
+                pendingSmartApps = smartApps
+                s.emitRaw("{\"method\": \"ms.channel.emit\", \"params\": {\"event\": \"ed.installedApp.get\", \"to\": \"host\"}}")
+                s.emitRaw("{\"method\": \"ms.channel.emit\", \"params\": {\"event\": \"ed.edenAppList.get\", \"to\": \"host\"}}")
+                Thread.sleep(2500)
+                pendingSmartApps = null
+                smartCount = smartApps.size
+                for (a in smartApps) addApp(a)
+            } else {
+                log("smart-канал не активен — ed-проба пропущена")
+            }
+
+            // Стратегия 2: корень /ws/apps/ (тело ответа — в журнал всегда)
+            var rootCount = 0
             try {
                 val (rc, rb) = orsayRest(port, "ws/apps/", "GET")
+                if (rb.isNotBlank()) {
+                    log("↳ тело /ws/apps/: ${rb.take(400).replace('\n', ' ')}")
+                }
                 if (rc in 200..299) {
                     val parsed = parseOrsayAppList(rb)
-                    if (parsed.isNotEmpty()) {
-                        log("✔ /ws/apps/ отдал список: ${parsed.size} шт.")
-                        onStatus("Найдено приложений: ${parsed.size}")
-                        onApps(parsed, false)
-                        return@Thread
-                    }
+                    rootCount = parsed.size
+                    for (a in parsed) addApp(a)
                 }
             } catch (_: Exception) {}
 
-            // 2) проба известных ID и DIAL-имён параллельно
-            val targets = ORSAY_KNOWN_APPS + ORSAY_DIAL_NAMES.map { it to it }
+            // Стратегия 3: /api/v2/applications (8001, затем 8002) —
+            // отказ тоже полезен: код в журнале показывает решение прошивки
+            var apiCount = 0
+            for ((scheme, p) in listOf("http" to 8001, "https" to 8002)) {
+                val (code, body) = restGet(scheme, p, "applications")
+                if (code in 200..299) {
+                    val list = parseAppJson(body)
+                    apiCount += list.size
+                    for (a in list) addApp(a)
+                }
+            }
+
+            // Стратегия 4: проба DIAL-имён и известных ID параллельно в 8 потоков
+            val targets = (ORSAY_DIAL_NAMES.map { it to it } + ORSAY_KNOWN_APPS).distinctBy { it.first }
             val hits = Collections.synchronizedList(mutableListOf<AppInfo>())
             val firstMiss = Collections.synchronizedList(mutableListOf<String>())
             val pool = Executors.newFixedThreadPool(8)
@@ -677,20 +747,22 @@ class SamsungRemote(
                 }
             }
             for (f in futures) {
-                try { f.get(20, TimeUnit.SECONDS) } catch (_: Exception) {}
+                try { f.get(30, TimeUnit.SECONDS) } catch (_: Exception) {}
             }
             pool.shutdownNow()
             firstMiss.firstOrNull()?.let { log("↳ пример отказа ТВ: $it") }
+            for (a in hits) addApp(a)
 
-            // дубли по имени (у YouTube/Netflix по два ID — оставляем первый сработавший)
-            val list = hits.distinctBy { it.name.lowercase(Locale.ROOT) }
+            log("Поиск приложений: smart-канал → $smartCount, /ws/apps/ → $rootCount, /api/v2 → $apiCount, пробы имён/ID → ${hits.size}; уникальных → ${found.size}")
+
+            val list = found.distinctBy { it.name.lowercase(Locale.ROOT) }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
             if (list.isNotEmpty()) {
-                log("✔ Найдено установленных (из известных): ${list.size}")
+                log("✔ Найдено установленных: ${list.size}")
                 onStatus("Найдено приложений: ${list.size}")
                 onApps(list, false)
             } else {
-                log("✖ Ни один ID не подтвердился — LIST-эндпоинта на Orsay нет; открываю каталог (запуск POST-ом проверит установку)")
+                log("✖ Ни один ID/имя не подтвердился — LIST-эндпоинта на Orsay нет; открываю каталог (запуск POST-ом проверит установку)")
                 val catalog = ORSAY_KNOWN_APPS
                     .distinctBy { it.second.lowercase(Locale.ROOT) }
                     .map { AppInfo(it.first, it.second) }
@@ -1013,9 +1085,31 @@ class SamsungRemote(
 
         /**
          * DIAL-имена: часть прошивок адресует приложения по имени пути
-         * (/ws/apps/YouTube) — подтверждено на Orsay J-серии 2015.
+         * (/ws/apps/YouTube — подтверждено на Orsay H/J-сериях). Полного
+         * перечня не существует, поэтому ищем по словарю популярных имён
+         * эпохи Orsay (DIAL-реестр + captures Samsung 2012–2015), включая
+         * российские сервисы. Лишние имена просто отсеются по 404.
          */
-        val ORSAY_DIAL_NAMES: List<String> = listOf("YouTube", "Netflix")
+        val ORSAY_DIAL_NAMES: List<String> = listOf(
+            // подтверждены на ТВ пользователя
+            "YouTube", "Netflix",
+            // мировые сервисы
+            "AmazonInstantVideo", "PrimeVideo", "Hulu", "HuluPlus", "Vudu", "VUDU",
+            "Plex", "Spotify", "TuneIn", "TuneInRadio", "iHeartRadio", "Deezer",
+            "Napster", "Facebook", "Twitter", "Skype", "Vimeo", "Vevo", "TED",
+            "Dailymotion", "Crunchyroll", "Funimation", "Zattoo", "SkyGo", "HBOGO",
+            "HBO", "Showtime", "ShowtimeAnytime", "Starz", "StarzPlay", "SlingTV",
+            "CBSAllAccess", "ESPN", "WWENetwork", "MUBI", "Mubi", "BritBox",
+            "CuriosityStream", "RakutenTV", "Wuaki", "maxdome", "Maxdome", "Chili",
+            "ARTE", "Arte", "RaiPlay", "RaiTV", "All4", "ITV", "ITVPlayer",
+            "ITVHub", "BBCiPlayer", "Demand5", "My5", "UKTVPlay", "Tubi", "TubiTV",
+            "PlutoTV", "Xumo", "Peacock", "DAZN", "EurosportPlayer", "RedBullTV",
+            "Twitch", "Emby", "Jellyfin", "FuboTV", "Philo", "DiscoveryPlus",
+            "ParamountPlus", "AppleTV", "AppleMusic", "DisneyPlus",
+            // российские сервисы эпохи Smart Hub
+            "IVI", "Ivi", "Okko", "MEGOGO", "Megogo", "Tvzavr", "tvzavr", "Zefir",
+            "Kinopoisk", "Kion", "Wink", "Amediateka", "Premier", "Start", "Tvigle"
+        )
 
         /**
          * Wake-on-LAN: пробуждение ТВ из режима сна.

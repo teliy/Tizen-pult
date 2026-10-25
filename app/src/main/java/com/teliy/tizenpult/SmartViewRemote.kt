@@ -47,7 +47,8 @@ class SmartViewRemote(
     private val onTransport: (Boolean) -> Unit,
     private val onSavedAuth: (String) -> Unit, // сохранить «tokenHex|sessionId»
     private val onClosed: () -> Unit,
-    private val requestPin: (retry: Boolean, submit: (String?) -> Unit) -> Unit
+    private val requestPin: (retry: Boolean, submit: (String?) -> Unit) -> Unit,
+    private val onFrame: (String) -> Unit = { _ -> }   // расшифрованное тело ответа ТВ (для разбора событий)
 ) {
     companion object {
         private const val USER_ID = "654321"
@@ -134,6 +135,21 @@ class SmartViewRemote(
         val frame = encryptFrame(payload)
         val sent = w.send(frame)
         log(if (sent) "▶ $key (Smart View 2.0)" else "!! НЕ отправлено — соединение закрыто")
+    }
+
+    /**
+     * Произвольная команда в callCommon-кадре (тот же шифроконтейнер, что у клавиш).
+     * Используется для проб API, которых нет в эталоне (например, ed.installedApp.get):
+     * ответ ТВ всё равно придёт кадром 5:: и будет расшифрован в onMessage → onFrame.
+     */
+    fun emitRaw(bodyJson: String) {
+        val w = ws
+        if (!authOk || w == null) {
+            log("!! нет сеанса Smart View 2.0 — нажмите «Подключ.»")
+            return
+        }
+        val sent = w.send(encryptFrame(bodyJson))
+        log(if (sent) "▶ callCommon: ${bodyJson.take(100)}" else "!! НЕ отправлено — соединение закрыто")
     }
 
     fun close() {
@@ -314,8 +330,12 @@ class SmartViewRemote(
                     }
                     text.startsWith("1::") -> markConnected()
                     // ответы ТВ шифрованы токеном сеанса — расшифровываем для журнала
-                    text.startsWith("5::/com.samsung.companion:") ->
-                        log("◀ ТВ: ${decryptFrameText(text).take(220)}")
+                    // и отдаём верхнему уровню (разбор ed.*-событий, если прошивка умеет)
+                    text.startsWith("5::/com.samsung.companion:") -> {
+                        val dec = decryptFrameText(text)
+                        log("◀ ТВ: ${dec.take(220)}")
+                        onFrame(dec)
+                    }
                     else -> log("◀ ТВ: ${text.take(200)}")
                 }
             }
