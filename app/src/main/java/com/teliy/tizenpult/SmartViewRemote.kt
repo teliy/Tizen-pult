@@ -151,7 +151,7 @@ class SmartViewRemote(
     private fun pairWithPin(restPort: Int): Boolean {
         // Страница PIN на ТВ
         val (code, page) = http(restPort, "GET", "ws/apps/CloudPINPage", null)
-        val state = Regex("state>([^<>]*)", RegexOption.IGNORECASE).find(page)?.groupValues?.get(1)?.trim()
+        val state = Regex("state>([^<>]*)", RegexOption.IGNORE_CASE).find(page)?.groupValues?.get(1)?.trim()
         log("CloudPINPage: HTTP $code, state=${state ?: "?"}")
         if (state == null || state == "stopped") {
             val (pcode, _) = http(restPort, "POST", "ws/apps/CloudPINPage", "pin4")
@@ -184,7 +184,7 @@ class SmartViewRemote(
             }
             val clientHello = Regex(
                 "GeneratorClientHello[^0-9a-fA-F]*([0-9a-fA-F]{200,})",
-                RegexOption.IGNORECASE
+                RegexOption.IGNORE_CASE
             ).find(resp1)?.groupValues?.get(1)
             if (clientHello == null) {
                 log("В ответе ТВ нет GeneratorClientHello: ${resp1.take(120)}")
@@ -215,9 +215,9 @@ class SmartViewRemote(
         }
         val clientAck = Regex(
             "ClientAckMsg[^0-9a-fA-F]*([0-9a-fA-F]{40,})",
-            RegexOption.IGNORECASE
+            RegexOption.IGNORE_CASE
         ).find(authData)?.groupValues?.get(1)
-        val session = Regex("session_id[^0-9]*(\\d+)", RegexOption.IGNORECASE)
+        val session = Regex("session_id[^0-9]*(\\d+)", RegexOption.IGNORE_CASE)
             .find(authData)?.groupValues?.get(1)
         if (clientAck == null || session == null) {
             log("✖ В ответе нет ClientAckMsg/session_id: ${resp2.take(160)}")
