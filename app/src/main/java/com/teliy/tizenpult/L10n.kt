@@ -14,9 +14,13 @@ object L10n {
         appCtx = c.applicationContext
     }
 
-    /** Ресурсная строка (с подстановкой аргументов, если они есть). */
-    fun s(id: Int, vararg args: Any): String {
+    /** Ресурсная строка (с подстановкой аргументов, если они есть).
+     *  Аргументы могут быть nullable (e.message и т.п.) — null печатается как «null»,
+     *  как раньше делали шаблоны строк. */
+    fun s(id: Int, vararg args: Any?): String {
         val c = appCtx ?: return ""
-        return c.getString(id, *args)
+        if (args.isEmpty()) return c.getString(id)
+        val safe: Array<out Any> = args.map { it ?: "null" }.toTypedArray()
+        return c.getString(id, *safe)
     }
 }
