@@ -10,6 +10,16 @@
     <color name="glass_hint">#FF7A80A8</color>
     <color name="neu_status">#E8EBF2</color>
     <color name="neu_accent">#576078</color>
-    <color name="neu_text">#FF454B60</color>
-    <color name="neu_hint">#FF9AA0B4</color>
+    <color name="neu_text">#FF262B3D</color>
+    <color name="neu_hint">#FF848BA3</color>
+
+    <!-- v3.2: тёмные палитры -->
+    <color name="glass_dark_status">#FF10131F</color>
+    <color name="glass_dark_accent">#FF8C9BFF</color>
+    <color name="glass_dark_text">#FFE9EDFB</color>
+    <color name="glass_dark_hint">#FF9AA3C7</color>
+    <color name="neu_dark_status">#FF24272F</color>
+    <color name="neu_dark_accent">#FFA7B0FF</color>
+    <color name="neu_dark_text">#FFE5E8F2</color>
+    <color name="neu_dark_hint">#FF8B92A8</color>
 </resources>

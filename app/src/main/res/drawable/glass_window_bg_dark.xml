@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v3.2: фон экрана Glassmorphism (тёмная) — глубокий сине-графитовый градиент + слабое цветное свечение -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="315"
+                android:centerColor="#FF171B2E"
+                android:endColor="#FF10131F"
+                android:startColor="#FF161A2C"
+                android:type="linear" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerX="0.15"
+                android:centerY="0.06"
+                android:endColor="#005B72D8"
+                android:gradientRadius="380dp"
+                android:startColor="#4C5B72D8"
+                android:type="radial" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerX="0.88"
+                android:centerY="0.94"
+                android:endColor="#002C9E8F"
+                android:gradientRadius="430dp"
+                android:startColor="#4C2C9E8F"
+                android:type="radial" />
+        </shape>
+    </item>
+</layer-list>

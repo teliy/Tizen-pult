@@ -26,7 +26,8 @@ import java.util.Locale
  * v3.1: экран «Настройки» — всё, что не кнопки пульта:
  *  - телевизор: поиск в сети (история + SSDP + скан подсети), выбор из списка,
  *    IP вручную, сохранение выбранного ТВ (подключение выполняет пульт);
- *  - оформление: тема — Базовый / Glassmorphism (светлая) / Неоморфизм (светлый);
+ *  - оформление: тема — Базовый / Glassmorphism (светлая и тёмная) /
+ *    Неоморфизм (светлый и тёмный);
  *  - приложение: MAC ТВ для Wake-on-LAN, проверка обновлений, версия.
  *
  * Экран не держит собственного сеанса с ТВ: выбор сохраняется в prefs «host»,
@@ -83,7 +84,9 @@ class SettingsActivity : AppCompatActivity() {
         // Тема: тап по строке — сохранить и применить к настройкам
         findViewById<View>(R.id.themeOptBasic).setOnClickListener { pickTheme(ThemeEngine.BASIC) }
         findViewById<View>(R.id.themeOptGlass).setOnClickListener { pickTheme(ThemeEngine.GLASS) }
+        findViewById<View>(R.id.themeOptGlassDark).setOnClickListener { pickTheme(ThemeEngine.GLASS_DARK) }
         findViewById<View>(R.id.themeOptNeu).setOnClickListener { pickTheme(ThemeEngine.NEU) }
+        findViewById<View>(R.id.themeOptNeuDark).setOnClickListener { pickTheme(ThemeEngine.NEU_DARK) }
         renderThemeSelection()
 
         refreshTvSpinner(prefs.getString("host", null))
@@ -203,7 +206,9 @@ class SettingsActivity : AppCompatActivity() {
         }
         row(R.id.dotBasic, R.id.nameBasic, ThemeEngine.BASIC, selected.basic)
         row(R.id.dotGlass, R.id.nameGlass, ThemeEngine.GLASS, selected.glass)
+        row(R.id.dotGlassDark, R.id.nameGlassDark, ThemeEngine.GLASS_DARK, selected.glass)
         row(R.id.dotNeu, R.id.nameNeu, ThemeEngine.NEU, selected.neu)
+        row(R.id.dotNeuDark, R.id.nameNeuDark, ThemeEngine.NEU_DARK, selected.neu)
     }
 
     private data class ColorSelected(val basic: Int, val glass: Int, val neu: Int)

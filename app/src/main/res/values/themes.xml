@@ -30,4 +30,30 @@
         <item name="android:textColorSecondary">@color/neu_hint</item>
         <item name="android:textColorHint">@color/neu_hint</item>
     </style>
+
+    <!-- v3.2: Glassmorphism (тёмная) — глубокий тёмно-синий градиент, светящееся стекло -->
+    <style name="Theme_TizenPult_GlassDark" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@drawable/glass_window_bg_dark</item>
+        <item name="android:statusBarColor">@color/glass_dark_status</item>
+        <item name="android:navigationBarColor">@color/glass_dark_status</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="colorAccent">@color/glass_dark_accent</item>
+        <item name="colorPrimary">@color/glass_dark_accent</item>
+        <item name="android:textColorPrimary">@color/glass_dark_text</item>
+        <item name="android:textColorSecondary">@color/glass_dark_hint</item>
+        <item name="android:textColorHint">@color/glass_dark_hint</item>
+    </style>
+
+    <!-- v3.2: Неоморфизм (тёмный) — тёмный монохром, мягкие панели рисует ThemeEngine -->
+    <style name="Theme_TizenPult_NeuDark" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@drawable/neu_window_bg_dark</item>
+        <item name="android:statusBarColor">@color/neu_dark_status</item>
+        <item name="android:navigationBarColor">@color/neu_dark_status</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="colorAccent">@color/neu_dark_accent</item>
+        <item name="colorPrimary">@color/neu_dark_accent</item>
+        <item name="android:textColorPrimary">@color/neu_dark_text</item>
+        <item name="android:textColorSecondary">@color/neu_dark_hint</item>
+        <item name="android:textColorHint">@color/neu_dark_hint</item>
+    </style>
 </resources>

@@ -198,6 +198,47 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/themeOptGlassDark"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="10dp">
+
+                <TextView
+                    android:id="@+id/dotGlassDark"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="●"
+                    android:textSize="20sp" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp">
+
+                    <TextView
+                        android:id="@+id/nameGlassDark"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Glassmorphism (тёмная)"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Глубокий тёмно-синий градиент с мягким свечением, полупрозрачные «стеклянные» панели со светлой обводкой"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
                 android:id="@+id/themeOptNeu"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -233,7 +274,48 @@
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Серо-голубой монохром, мягкие «выпуклые» кнопки с двойной тенью, при нажатии — «вдавливание»"
+                        android:text="Серо-голубой монохром, мягкие «выпуклые» кнопки с двойной тенью, при нажатии — «вдавливание». Текст — тёмный и жирный"
+                        android:textSize="12sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/themeOptNeuDark"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="?attr/selectableItemBackground"
+                android:clickable="true"
+                android:focusable="true"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="10dp">
+
+                <TextView
+                    android:id="@+id/dotNeuDark"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="●"
+                    android:textSize="20sp" />
+
+                <LinearLayout
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:orientation="vertical"
+                    android:paddingStart="12dp">
+
+                    <TextView
+                        android:id="@+id/nameNeuDark"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Неоморфизм (тёмный)"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Тёмный монохром, мягкие «выпуклые» кнопки со светлым и теневым краями, при нажатии — «вдавливание»"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -242,7 +324,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingTop="2dp"
-                android:text="Тема применяется сразу к настройкам; пульт обновится при возврате."
+                android:text="Пять тем: Базовый, Glassmorphism и Неоморфизм — светлые и тёмные. Тема применяется сразу к настройкам; пульт обновится при возврате."
                 android:textSize="12sp" />
         </LinearLayout>
 
@@ -303,7 +385,7 @@
                 android:layout_height="wrap_content"
                 android:gravity="center"
                 android:paddingTop="8dp"
-                android:text="Версия 3.1"
+                android:text="Версия 3.2"
                 android:textSize="12sp" />
         </LinearLayout>
 
