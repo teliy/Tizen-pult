@@ -50,6 +50,7 @@ class SettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
+        L10n.init(applicationContext) // v3.5: строки вне активити
         ThemeEngine.applyTheme(this, prefs)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
@@ -67,7 +68,7 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnConnect).setOnClickListener { connectManual() }
         findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
         findViewById<Button>(R.id.btnMacSave).setOnClickListener { saveMac() }
-        findViewById<TextView>(R.id.versionView).text = "Версия ${currentVersionName()}"
+        findViewById<TextView>(R.id.versionView).text = getString(R.string.version_fmt, currentVersionName())
 
         // Выбор ТВ из истории/поиска — сохраняем сразу, подключение сделает пульт
         tvSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -78,6 +79,7 @@ class SettingsActivity : AppCompatActivity() {
                 prefs.edit().putString("host", opt.ip).apply()
                 ipInput.setText(opt.ip)
                 showSavedHost()
+                maybePairNewTv(opt.ip) // v3.5: новый ТВ — сопряжение прямо здесь
             }
 
             override fun onNothingSelected(parent: AdapterView<*>?) {}
@@ -100,9 +102,9 @@ class SettingsActivity : AppCompatActivity() {
         val host = prefs.getString("host", null)
         val name = TvStore.load(prefs).firstOrNull { it.ip == host }?.name
         statusView.text = when {
-            host.isNullOrBlank() -> "ТВ не выбран — нажмите «Найти ТВ в сети»"
-            name.isNullOrBlank() -> "ТВ: $host"
-            else -> "ТВ: $name — $host"
+            host.isNullOrBlank() -> getString(R.string.s_no_tv)
+            name.isNullOrBlank() -> getString(R.string.s_tv_fmt, host)
+            else -> getString(R.string.s_tv_named, name, host)
         }
     }
 
@@ -112,13 +114,13 @@ class SettingsActivity : AppCompatActivity() {
      */
     @SuppressLint("SetTextI18n")
     private fun findTv() {
-        statusView.text = "Поиск ТВ в сети…"
+        statusView.text = getString(R.string.search_tv)
         Thread {
             val report = TvDiscovery.discoverAll(
                 applicationContext,
                 prefs.getString("host", null),
                 TvStore.load(prefs).map { it.ip }
-            ) { p -> runOnUiThread { statusView.text = "🔎 $p" } }
+            ) { p -> runOnUiThread { statusView.text = getString(R.string.s_progress, p) } }
 
             TvStore.rememberFound(prefs, report.found)
 
@@ -126,17 +128,18 @@ class SettingsActivity : AppCompatActivity() {
                 when {
                     report.found.isEmpty() ->
                         statusView.text =
-                            "ТВ не найден. Включите ТВ, проверьте Wi-Fi или введите IP вручную"
+                            getString(R.string.s_not_found)
                     report.found.size == 1 -> {
                         prefs.edit().putString("host", report.found[0].ip).apply()
                         ipInput.setText(report.found[0].ip)
                         statusView.text =
-                            "Найден ТВ: ${report.found[0].name} (${report.found[0].ip}) — сохранён"
+                            getString(R.string.s_found_one, report.found[0].name, report.found[0].ip)
                         refreshTvSpinner(report.found[0].ip)
+                        maybePairNewTv(report.found[0].ip) // v3.5: сразу сопряжение
                     }
                     else -> {
                         statusView.text =
-                            "Найдено ТВ: ${report.found.size} — выберите в списке и нажмите «Подключ.»"
+                            getString(R.string.s_found_n, report.found.size)
                         refreshTvSpinner(prefs.getString("host", null))
                     }
                 }
@@ -152,7 +155,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun renameTv() {
         val host = prefs.getString("host", null)
         if (host.isNullOrBlank()) {
-            toast("Сначала выберите ТВ")
+            toast(getString(R.string.s_need_tv))
             return
         }
         val list = TvStore.load(prefs)
@@ -165,13 +168,13 @@ class SettingsActivity : AppCompatActivity() {
             setSelection(current.length)
         }
         AlertDialog.Builder(this)
-            .setTitle("Переименовать ТВ")
-            .setMessage("$host\n\nИмя появится в списке ТВ на пульте и здесь.")
+            .setTitle(getString(R.string.s_rename_title))
+            .setMessage(getString(R.string.s_rename_msg, host))
             .setView(input)
-            .setPositiveButton("Сохранить") { _, _ ->
+            .setPositiveButton(getString(R.string.gen_save)) { _, _ ->
                 val newName = input.text.toString().trim()
                 if (newName.isEmpty()) {
-                    toast("Имя пустое — оставили как было")
+                    toast(getString(R.string.s_name_empty))
                     return@setPositiveButton
                 }
                 val i = list.indexOfFirst { it.ip == host }
@@ -186,23 +189,23 @@ class SettingsActivity : AppCompatActivity() {
                 TvStore.save(prefs, list)
                 refreshTvSpinner(host)
                 showSavedHost()
-                toast("Переименовано: $newName")
+                toast(getString(R.string.s_renamed, newName))
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
-    /** Сохранить IP вручную; подключение выполнит главный экран при возврате */
+    /** Сохранить IP вручную и сразу проверить подключение (новый ТВ — сопряжение здесь) */
     private fun connectManual() {
         val host = ipInput.text.toString().trim()
         if (host.isEmpty()) {
-            toast("Введите IP или нажмите «Найти ТВ»")
+            toast(getString(R.string.s_enter_ip))
             return
         }
         prefs.edit().putString("host", host).apply()
         showSavedHost()
-        statusView.text = "ТВ сохранён: $host — вернитесь назад, пульт подключится"
-        toast("Сохранено — вернитесь к пульту")
+        toast(getString(R.string.s_saved))
+        maybePairNewTv(host) // v3.5: не просто сохранить, а сразу подключить
     }
 
     /**
@@ -215,12 +218,12 @@ class SettingsActivity : AppCompatActivity() {
         for (k in TvStore.load(prefs)) {
             if (seen.add(k.ip)) {
                 val mark = if (selectIp == k.ip) "▸ " else ""
-                val old = if (k.legacy) " — старый протокол" else ""
+                val old = if (k.legacy) getString(R.string.s_suffix_legacy) else ""
                 opts.add(TvOption("$mark${k.name} — ${k.model.ifBlank { "Samsung" }} — ${k.ip}$old", k.ip))
             }
         }
         if (opts.isEmpty()) {
-            opts.add(TvOption("ТВ не найден — нажмите «Найти ТВ в сети»", ""))
+            opts.add(TvOption(getString(R.string.s_spinner_hint), ""))
         }
         tvOptions = opts
 
@@ -239,7 +242,7 @@ class SettingsActivity : AppCompatActivity() {
     private fun pickTheme(theme: String) {
         if (ThemeEngine.current(prefs) == theme) return
         ThemeEngine.save(prefs, theme)
-        toast("Тема применена")
+        toast(getString(R.string.s_theme_applied))
         recreate()
     }
 
@@ -268,11 +271,11 @@ class SettingsActivity : AppCompatActivity() {
     private fun saveMac() {
         val mac = findViewById<EditText>(R.id.macInput).text.toString().trim()
         if (mac.isNotEmpty() && !mac.contains(":")) {
-            toast("MAC выглядит странно — нужен вид C0:23:8D:49:B3:BC")
+            toast(getString(R.string.s_mac_weird))
             return
         }
         prefs.edit().putString("mac", mac).apply()
-        toast(if (mac.isEmpty()) "MAC очищен" else "MAC сохранён: $mac")
+        toast(if (mac.isEmpty()) getString(R.string.s_mac_cleared) else getString(R.string.s_mac_saved, mac))
     }
 
     private fun currentVersionName(): String = try {
@@ -284,17 +287,17 @@ class SettingsActivity : AppCompatActivity() {
     /** Проверка обновлений: GitHub Releases → сравнение версий → диалог */
     @SuppressLint("SetTextI18n")
     private fun checkUpdate() {
-        statusView.text = "Проверка обновлений…"
+        statusView.text = getString(R.string.s_upd_checking)
         Thread {
             try {
                 val rel = UpdateChecker.fetchLatest()
                 val cur = currentVersionName()
                 if (!UpdateChecker.isNewer(rel.version, cur)) {
                     runOnUiThread {
-                        statusView.text = "Обновлений нет"
+                        statusView.text = getString(R.string.s_upd_none)
                         AlertDialog.Builder(this)
-                            .setTitle("У вас актуальная версия")
-                            .setMessage("Установлена версия $cur.\nПоследний релиз на GitHub: ${rel.tag}.")
+                            .setTitle(getString(R.string.s_upd_uptodate_title))
+                            .setMessage(getString(R.string.s_upd_uptodate_msg, cur, rel.tag))
                             .setPositiveButton("OK", null)
                             .show()
                     }
@@ -302,8 +305,8 @@ class SettingsActivity : AppCompatActivity() {
                 }
                 if (rel.apkUrl.isNullOrBlank()) {
                     runOnUiThread {
-                        statusView.text = "В релизе ${rel.tag} нет APK-файла"
-                        toast("В релизе ${rel.tag} нет APK-файла")
+                        statusView.text = getString(R.string.s_upd_no_apk, rel.tag)
+                        toast(getString(R.string.s_upd_no_apk, rel.tag))
                     }
                     return@Thread
                 }
@@ -311,22 +314,20 @@ class SettingsActivity : AppCompatActivity() {
                 val mb = rel.apkSize / 1048576f
                 runOnUiThread {
                     AlertDialog.Builder(this)
-                        .setTitle("Доступно обновление ${rel.version}")
+                        .setTitle(getString(R.string.s_upd_available, rel.version))
                         .setMessage(
-                            "Установлена версия $cur.\n" +
-                                "Новая версия: ${rel.version} (${String.format(Locale.getDefault(), "%.1f", mb)} МБ).\n\n" +
-                                "Скачать с GitHub и установить?"
+                            getString(R.string.s_upd_msg, cur, rel.version, mb)
                         )
-                        .setPositiveButton("Скачать и установить") { _, _ -> downloadAndInstall(url, rel.version) }
-                        .setNegativeButton("Позже", null)
+                        .setPositiveButton(getString(R.string.s_download_btn)) { _, _ -> downloadAndInstall(url, rel.version) }
+                        .setNegativeButton(getString(R.string.gen_later), null)
                         .show()
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    statusView.text = "Ошибка проверки обновлений"
+                    statusView.text = getString(R.string.s_upd_check_error)
                     AlertDialog.Builder(this)
-                        .setTitle("Не удалось проверить обновления")
-                        .setMessage("${e.message}\n\nПроверьте интернет и попробуйте ещё раз.")
+                        .setTitle(getString(R.string.s_upd_check_fail_title))
+                        .setMessage(getString(R.string.s_upd_fail_msg, e.message))
                         .setPositiveButton("OK", null)
                         .show()
                 }
@@ -337,27 +338,27 @@ class SettingsActivity : AppCompatActivity() {
     /** Скачивание APK с прогрессом в строке статуса настроек */
     @SuppressLint("SetTextI18n")
     private fun downloadAndInstall(url: String, version: String) {
-        statusView.text = "Скачивание v$version…"
+        statusView.text = getString(R.string.s_downloading, version)
         Thread {
             try {
                 val dest = File(getExternalFilesDir(null), "update-$version.apk")
                 UpdateChecker.download(url, dest) { done, total ->
                     val mb = 1048576f
                     val txt = if (total > 0)
-                        String.format(Locale.getDefault(), "Скачивание v%s: %.1f / %.1f МБ", version, done / mb, total / mb)
+                        getString(R.string.s_downloading_progress, version, done / mb, total / mb)
                     else
-                        String.format(Locale.getDefault(), "Скачивание v%s: %.1f МБ", version, done / mb)
+                        getString(R.string.s_downloading_mb, version, done / mb)
                     runOnUiThread { statusView.text = txt }
                 }
                 pendingInstall = dest
                 runOnUiThread {
-                    statusView.text = "Скачано ${dest.name} — запускаю установку"
+                    statusView.text = getString(R.string.s_downloaded, dest.name)
                     startInstall(dest)
                 }
             } catch (e: Exception) {
                 runOnUiThread {
-                    statusView.text = "Ошибка скачивания: ${e.message}"
-                    toast("Ошибка скачивания: ${e.message}")
+                    statusView.text = getString(R.string.s_download_error, e.message)
+                    toast(getString(R.string.s_download_error, e.message))
                 }
             }
         }.start()
@@ -369,7 +370,7 @@ class SettingsActivity : AppCompatActivity() {
         // После возврата из настроек установка продолжится в onResume().
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
             pendingInstall = apk
-            toast("Разрешите установку для Tizen-Пульт в открывшихся настройках")
+            toast(getString(R.string.s_allow_install, getString(R.string.app_name)))
             try {
                 startActivity(
                     Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
@@ -378,7 +379,7 @@ class SettingsActivity : AppCompatActivity() {
                 try {
                     startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES))
                 } catch (e: Exception) {
-                    toast("Откройте: Настройки → Приложения → Tizen-Пульт → Устанавливать неизвестные приложения")
+                    toast(getString(R.string.s_allow_install_manual, getString(R.string.app_name)))
                 }
             }
             return
@@ -391,7 +392,7 @@ class SettingsActivity : AppCompatActivity() {
         try {
             startActivity(intent)
         } catch (e: Exception) {
-            toast("Не удалось запустить установщик: ${e.message}")
+            toast(getString(R.string.s_installer_fail, e.message))
         }
     }
 
@@ -402,6 +403,150 @@ class SettingsActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) return
         pendingInstall = null
         if (f.exists()) startInstall(f)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        closePairing() // v3.5: не оставлять сеанс с ТВ после закрытия настроек
+    }
+
+    // ---------- v3.5: сопряжение нового ТВ прямо в настройках ----------
+
+    /** Активная проба подключения (закрывается при уходе с экрана) */
+    private var pairingRemote: SamsungRemote? = null
+
+    /** Номер текущей попытки: устаревшие фоновые потоки не трогают UI */
+    @Volatile private var pairingSeq = 0
+
+    /**
+     * Если этот ТВ ещё ни разу не подключался (нет сохранённого протокола) —
+     * подключаемся прямо отсюда: при первом сопряжении ТВ покажет PIN, и окно
+     * ввода откроется в настройках, а не на пульте. Успешное сопряжение
+     * запоминает протокол и токен — пульт после возврата подключится молча.
+     */
+    private fun maybePairNewTv(host: String) {
+        if (host.isBlank()) return
+        if (!prefs.getString("proto:$host", null).isNullOrBlank()) return // уже работали — PIN не нужен
+        closePairing()
+        val seq = ++pairingSeq
+        statusView.text =
+            getString(R.string.s_pair_start, host)
+        Thread {
+            val ok = try {
+                pairProbe(host)
+            } finally {
+                if (seq == pairingSeq) pairingRemote = null
+            }
+            runOnUiThread {
+                if (seq != pairingSeq) return@runOnUiThread // уже начали другую попытку
+                statusView.text = if (ok)
+                    getString(R.string.s_pair_ok)
+                else
+                    getString(R.string.s_pair_fail)
+            }
+        }.start()
+    }
+
+    private fun closePairing() {
+        pairingSeq++ // фоновые потоки прошлой попытки перестают трогать UI
+        pairingRemote?.close()
+        pairingRemote = null
+    }
+
+    /** Перебор протоколов — как в пульте (порты → порядок проб) */
+    private fun pairProbe(host: String): Boolean {
+        val p8002 = TvDiscovery.portOpen(host, 8002, 1500)
+        val p8001 = TvDiscovery.portOpen(host, 8001, 1500)
+        val p55000 = TvDiscovery.portOpen(host, 55000, 1500)
+        var p8080 = false
+        var p8000 = false
+        if (!p8002) {
+            p8080 = TvDiscovery.portOpen(host, 8080, 1200)
+            p8000 = TvDiscovery.portOpen(host, 8000, 1200)
+        }
+        val caps = mutableListOf<String>()
+        if (p8002) caps.add("wss")
+        if (p8001) caps.add("ws")
+        caps.add("legacy")
+        caps.add("legacy-aes")
+        if (p8080 || p8000) caps.add("smart")
+        val saved = prefs.getString("proto:$host", null)
+        if (!saved.isNullOrBlank() && caps.remove(saved)) caps.add(0, saved)
+        for (proto in caps) {
+            if (pairTryProto(host, proto)) {
+                prefs.edit().putString("proto:$host", proto).apply()
+                return true
+            }
+        }
+        return false
+    }
+
+    /** Одна попытка сопряжения; PIN запрашивается диалогом в настройках */
+    private fun pairTryProto(host: String, proto: String): Boolean {
+        val seq = pairingSeq
+        val r = SamsungRemote(
+            host = host,
+            proto = proto,
+            token = prefs.getString("token:$host", null),
+            smartAuth = prefs.getString("sv:$host", null),
+            deviceId = deviceUuid(),
+            onStatus = { s -> runOnUiThread { if (seq == pairingSeq) statusView.text = s } },
+            onToken = { t -> prefs.edit().putString("token:$host", t).apply() },
+            onApps = { _, _ -> },
+            onLog = { }, // подробный журнал — на пульте, здесь только статус
+            onSmartAuth = { auth -> prefs.edit().putString("sv:$host", auth).apply() },
+            onPin = { retry, submit -> showPinDialog(retry, submit) }
+        )
+        pairingRemote = r
+        r.connect()
+        // smart: сопряжение с вводом PIN занимает время — даём до 5 минут
+        val deadAfter = if (proto == "smart") 300_000L else 8_000L
+        val aliveAfter = if (proto == "smart") 330_000L else 30_000L
+        val t0 = System.currentTimeMillis()
+        while (seq == pairingSeq) {
+            if (r.isRejected()) return false
+            if (r.isConnected()) {
+                r.close() // сопряжение завершено — пульт переподключится сам по токену
+                return true
+            }
+            val elapsed = System.currentTimeMillis() - t0
+            if (r.isTransportAlive()) {
+                if (elapsed > aliveAfter) break
+            } else if (elapsed > deadAfter) {
+                break
+            }
+            Thread.sleep(250)
+        }
+        r.close()
+        return false
+    }
+
+    /** Стабильный UUID устройства для сопряжения Smart View 2.0 (тот же, что у пульта) */
+    private fun deviceUuid(): String {
+        var id = prefs.getString("svdevid", null)
+        if (id.isNullOrBlank()) {
+            id = java.util.UUID.randomUUID().toString()
+            prefs.edit().putString("svdevid", id).apply()
+        }
+        return id
+    }
+
+    /** v3.5: диалог ввода PIN с экрана ТВ — прямо в настройках */
+    private fun showPinDialog(retry: Boolean, submit: (String?) -> Unit) {
+        runOnUiThread {
+            val input = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_NUMBER
+                hint = "1234"
+            }
+            AlertDialog.Builder(this)
+                .setTitle(if (retry) getString(R.string.pin_retry) else getString(R.string.pin_title))
+                .setMessage(getString(R.string.pin_message))
+                .setView(input)
+                .setPositiveButton("OK") { _, _ -> submit(input.text.toString().trim()) }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> submit(null) }
+                .setOnCancelListener { submit(null) }
+                .show()
+        }
     }
 
     private fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()

@@ -14,7 +14,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Настройки"
+            android:text="@string/s_title"
             android:textSize="22sp"
             android:textStyle="bold" />
 
@@ -22,7 +22,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingBottom="8dp"
-            android:text="Подключение к телевизору, оформление и приложение"
+            android:text="@string/lay_settings_subtitle"
             android:textSize="13sp" />
 
         <!-- ============ ТЕЛЕВИЗОР ============ -->
@@ -37,7 +37,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingBottom="4dp"
-                android:text="ТЕЛЕВИЗОР"
+                android:text="@string/lay_card_tv"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -46,7 +46,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingBottom="4dp"
-                android:text="ТВ: —"
+                android:text="@string/lay_tv_none"
                 android:textSize="13sp"
                 android:textStyle="italic" />
 
@@ -60,14 +60,14 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:text="Найти ТВ в сети" />
+                android:text="@string/lay_find_tv" />
 
             <!-- v3.3: переименование выбранного ТВ (имя видно в списке на пульте и здесь) -->
             <Button
                 android:id="@+id/btnRename"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="✎ Переименовать выбранный ТВ" />
+                android:text="@string/lay_rename" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -79,7 +79,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="IP вручную (напр. 192.168.1.225)"
+                    android:hint="@string/lay_ip_hint"
                     android:inputType="text"
                     android:maxLines="1" />
 
@@ -87,21 +87,21 @@
                     android:id="@+id/btnConnect"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Подключ." />
+                    android:text="@string/lay_connect" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingTop="2dp"
-                android:text="Тап по ТВ в списке — выбрать. «Подключ.» — сохранить выбор и вернуться к пульту, он подключится сам."
+                android:text="@string/lay_pick_hint"
                 android:textSize="12sp" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingTop="4dp"
-                android:text="Поиск ищет и новые ТВ (Tizen), и старые (2011–2015). Если ТВ выключен — включите его и повторите поиск; включение спящего ТВ — кнопкой POWER на пульте."
+                android:text="@string/lay_search_desc"
                 android:textSize="12sp" />
         </LinearLayout>
 
@@ -118,7 +118,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingBottom="2dp"
-                android:text="ОФОРМЛЕНИЕ"
+                android:text="@string/lay_theme_section"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -151,14 +151,14 @@
                         android:id="@+id/nameBasic"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Базовый"
+                        android:text="@string/lay_theme_basic"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Как было: стандартные кнопки Material, светлая и тёмная по настройкам системы"
+                        android:text="@string/lay_theme_basic_desc"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -192,14 +192,14 @@
                         android:id="@+id/nameGlass"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Glassmorphism (светлая)"
+                        android:text="@string/lay_theme_glass"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Пастельный градиент с цветовыми пятнами, полупрозрачные «стеклянные» карточки и кнопки"
+                        android:text="@string/lay_theme_glass_desc"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -233,14 +233,14 @@
                         android:id="@+id/nameGlassDark"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Glassmorphism (тёмная)"
+                        android:text="@string/lay_theme_glass_dark"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Глубокий тёмно-синий градиент с мягким свечением, полупрозрачные «стеклянные» панели со светлой обводкой"
+                        android:text="@string/lay_theme_glass_dark_desc"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -274,14 +274,14 @@
                         android:id="@+id/nameNeu"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Неоморфизм (светлый)"
+                        android:text="@string/lay_theme_neu"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Серо-голубой монохром, мягкие «выпуклые» кнопки с двойной тенью, при нажатии — «вдавливание». Текст — тёмный и жирный"
+                        android:text="@string/lay_theme_neu_desc"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -315,14 +315,14 @@
                         android:id="@+id/nameNeuDark"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Неоморфизм (тёмный)"
+                        android:text="@string/lay_theme_neu_dark"
                         android:textSize="16sp"
                         android:textStyle="bold" />
 
                     <TextView
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Тёмный монохром, мягкие «выпуклые» кнопки со светлым и теневым краями, при нажатии — «вдавливание»"
+                        android:text="@string/lay_theme_neu_dark_desc"
                         android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
@@ -331,7 +331,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingTop="2dp"
-                android:text="Пять тем: Базовый, Glassmorphism и Неоморфизм — светлые и тёмные. Тема применяется сразу к настройкам; пульт обновится при возврате."
+                android:text="@string/lay_themes_note"
                 android:textSize="12sp" />
         </LinearLayout>
 
@@ -348,7 +348,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingBottom="4dp"
-                android:text="ПРИЛОЖЕНИЕ"
+                android:text="@string/lay_app_section"
                 android:textSize="12sp"
                 android:textStyle="bold" />
 
@@ -356,13 +356,13 @@
                 android:id="@+id/btnUpdate"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Проверить обновления приложения" />
+                android:text="@string/lay_upd_btn" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingTop="6dp"
-                android:text="MAC-адрес ТВ — для включения по сети (Wake-on-LAN). Подключение сохраняет его автоматически; вручную смотрите на ТВ: Настройки → Общие → Сеть → Состояние сети."
+                android:text="@string/lay_mac_desc"
                 android:textSize="12sp" />
 
             <LinearLayout
@@ -375,7 +375,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="MAC ТВ, напр. C0:23:8D:49:B3:BC"
+                    android:hint="@string/lay_mac_hint"
                     android:inputType="text"
                     android:maxLines="1" />
 
@@ -383,7 +383,7 @@
                     android:id="@+id/btnMacSave"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Сохранить" />
+                    android:text="@string/gen_save" />
             </LinearLayout>
 
             <TextView
@@ -392,7 +392,7 @@
                 android:layout_height="wrap_content"
                 android:gravity="center"
                 android:paddingTop="8dp"
-                android:text="Версия 3.2"
+                android:text="—"
                 android:textSize="12sp" />
         </LinearLayout>
 

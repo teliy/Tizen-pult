@@ -79,19 +79,19 @@ object TvDiscovery {
 
         // 1. Сохранённый адрес и найденные ранее — проверяем первыми
         if (!savedHost.isNullOrBlank() && candidates.add(savedHost)) {
-            stage("кандидат: сохранённый адрес $savedHost")
+            stage(L10n.s(R.string.td_candidate_saved, savedHost))
         }
         for (ip in knownIps) {
-            if (candidates.add(ip)) stage("кандидат: найден ранее $ip")
+            if (candidates.add(ip)) stage(L10n.s(R.string.td_candidate_known, ip))
         }
 
         // 2. SSDP (до ~3 сек; включает MulticastLock — без него Android часто
         //    молча выбрасывает multicast-ответы на Wi-Fi)
         val t0 = System.currentTimeMillis()
-        stage("SSDP-поиск (до 3 сек)…")
+        stage(L10n.s(R.string.td_ssdp))
         val ssdp = ssdpIps(appContext)
         stage(
-            "SSDP: ответов ${ssdp.size} за ${System.currentTimeMillis() - t0} мс" +
+            L10n.s(R.string.td_ssdp_stat, ssdp.size, System.currentTimeMillis() - t0) +
                 if (ssdp.isEmpty()) "" else ": $ssdp"
         )
         for (ip in ssdp) candidates.add(ip)
@@ -99,22 +99,21 @@ object TvDiscovery {
         // 3. Скан подсети всех локальных сетей телефона (обычно одна — Wi-Fi)
         val nets = localIpv4s()
         if (nets.isEmpty()) {
-            stage("локальный IPv4 не найден (Wi-Fi выключен? мобильный интернет?) — скан подсети пропущен")
+            stage(L10n.s(R.string.td_no_ipv4))
         } else {
-            stage("сети телефона: $nets")
+            stage(L10n.s(R.string.td_phone_nets, nets))
             val donePrefixes = mutableSetOf<String>()
             for (local in nets) {
                 val prefix = local.substringBeforeLast('.')
                 if (!donePrefixes.add(prefix)) continue
                 val t1 = System.currentTimeMillis()
-                stage("скан $prefix.1–254, порты 8001 и 55000…")
+                stage(L10n.s(R.string.td_scan_range, prefix))
                 val scan = scanSubnet(prefix)
                 legacyIps.addAll(scan.open55000)
-                val o1 = if (scan.open8001.isEmpty()) "нет" else scan.open8001.joinToString(", ")
-                val o5 = if (scan.open55000.isEmpty()) "нет" else scan.open55000.joinToString(", ")
+                val o1 = if (scan.open8001.isEmpty()) L10n.s(R.string.td_no) else scan.open8001.joinToString(", ")
+                val o5 = if (scan.open55000.isEmpty()) L10n.s(R.string.td_no) else scan.open55000.joinToString(", ")
                 stage(
-                    "скан $prefix.x за ${System.currentTimeMillis() - t1} мс: " +
-                        "8001 → $o1, 55000 → $o5, отказ → ${scan.refused}, тишина → ${scan.silent}"
+                    L10n.s(R.string.td_scan_stat, prefix, System.currentTimeMillis() - t1, o1, o5, scan.refused, scan.silent)
                 )
                 for (ip in scan.open8001) candidates.add(ip)
                 for (ip in scan.open55000) candidates.add(ip)
@@ -124,7 +123,7 @@ object TvDiscovery {
         // 4. Проверка всех кандидатов: Tizen-API, затем старые Samsung
         val found = mutableListOf<Result>()
         for (ip in candidates) {
-            onProgress("проверяю $ip…")
+            onProgress(L10n.s(R.string.td_checking, ip))
             val r = verify(ip, 1500)
             if (r != null) {
                 val res = r.copy(
@@ -133,7 +132,7 @@ object TvDiscovery {
                 found.add(res)
                 // 8001 отвечает и на старых Orsay (2014–2015) — различаем по REST-порту 8080
                 val era = if (portOpen(ip, 8080, 400)) "Orsay 2014–2015" else "Tizen"
-                stage("ТВ найден ($era): ${res.name} — ${res.model} ($ip)")
+                stage(L10n.s(R.string.td_found, era, res.name, res.model, ip))
             } else {
                 // Не отвечает по Tizen-API (2016+). Может, это старый Samsung
                 // (2011–2015) — спросим его имя по http://IP:7676/ms/1.0/
@@ -141,23 +140,23 @@ object TvDiscovery {
                 if (dev != null) {
                     val res = Result(
                         ip = ip,
-                        name = dev.first.ifBlank { "ТВ Samsung" },
+                        name = dev.first.ifBlank { L10n.s(R.string.td_tv_samsung) },
                         model = dev.second,
-                        source = sourceOf(ip, savedHost, knownIps, ssdp) + " · старый протокол",
+                        source = sourceOf(ip, savedHost, knownIps, ssdp) + L10n.s(R.string.td_suffix_legacy),
                         legacy = true
                     )
                     found.add(res)
-                    stage("ТВ со старым протоколом: ${res.name} ${res.model} ($ip) — подключение через порт 55000")
+                    stage(L10n.s(R.string.td_old_stage, res.name, res.model, ip))
                 } else if (legacyIps.contains(ip)) {
                     val res = Result(
                         ip = ip,
-                        name = "ТВ Samsung (старый)",
+                        name = L10n.s(R.string.td_tv_samsung_old),
                         model = "",
-                        source = sourceOf(ip, savedHost, knownIps, ssdp) + " · порт 55000",
+                        source = sourceOf(ip, savedHost, knownIps, ssdp) + L10n.s(R.string.td_suffix_55000),
                         legacy = true
                     )
                     found.add(res)
-                    stage("Старый Samsung (открыт порт 55000, имя недоступно): $ip")
+                    stage(L10n.s(R.string.td_old_no_name, ip))
                 }
             }
         }
@@ -201,10 +200,10 @@ object TvDiscovery {
         knownIps: List<String>,
         ssdp: List<String>
     ): String = when {
-        ip == savedHost -> "сохранённый адрес"
+        ip == savedHost -> L10n.s(R.string.td_saved_addr)
         ssdp.contains(ip) -> "SSDP"
-        knownIps.contains(ip) -> "найден ранее"
-        else -> "скан сети"
+        knownIps.contains(ip) -> L10n.s(R.string.td_known)
+        else -> L10n.s(R.string.td_scan)
     }
 
     /**

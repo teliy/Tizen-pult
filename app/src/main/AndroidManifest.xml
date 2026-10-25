@@ -28,7 +28,7 @@
         <!-- v3.1: экран настроек — поиск/выбор ТВ, темы оформления, MAC, обновления -->
         <activity
             android:name=".SettingsActivity"
-            android:label="Настройки"
+            android:label="@string/s_title"
             android:parentActivityName=".MainActivity"
             android:screenOrientation="portrait" />
 

@@ -148,7 +148,7 @@ class SamsungRemote(
                     connected = false
                     transportAlive = false
                     onTvNow?.invoke("")
-                    onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
+                    onStatus(L10n.s(R.string.disconnected_status))
                 }
             )
             legacy = lr
@@ -170,7 +170,7 @@ class SamsungRemote(
                     connected = false
                     transportAlive = false
                     onTvNow?.invoke("")
-                    onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
+                    onStatus(L10n.s(R.string.disconnected_status))
                 },
                 requestPin = { retry, submit -> onPin?.invoke(retry, submit) },
                 onFrame = { dec -> onSmartFrame(dec) }
@@ -192,45 +192,45 @@ class SamsungRemote(
         val usingToken = withToken && !token.isNullOrBlank()
         if (usingToken) url += "&token=$token"
 
-        log(if (usingToken) "Подключение к $scheme://$host:$port (с сохранённым токеном)" else "Подключение к $scheme://$host:$port (без токена — ТВ покажет запрос)")
+        log(if (usingToken) L10n.s(R.string.sr_conn_token, scheme, host, port) else L10n.s(R.string.sr_conn_notoken, scheme, host, port))
 
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 transportAlive = true
-                log("WS открыт: HTTP ${response.code}")
-                onStatus("Соединение открыто, ждём ответ ТВ...")
+                log(L10n.s(R.string.sr_ws_open, response.code))
+                onStatus(L10n.s(R.string.connect_wait))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                log("◀ ТВ: ${mask(text).take(400)}")
+                log(L10n.s(R.string.sr_frame_in, mask(text).take(400)))
                 try {
                     handleMessage(JSONObject(text))
                 } catch (e: Exception) {
-                    log("!! не удалось разобрать кадр: ${e.message}")
+                    log(L10n.s(R.string.sr_frame_parse_err, e.message))
                 }
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                log("ТВ закрывает соединение: code=$code reason=${reason.ifBlank { "-" }}")
+                log(L10n.s(R.string.sr_ws_closing, code, reason.ifBlank { "-" }))
                 webSocket.close(1000, null)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                log("WS закрыт: code=$code")
+                log(L10n.s(R.string.sr_ws_closed, code))
                 connected = false
                 transportAlive = false
                 onTvNow?.invoke("")
-                onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
+                onStatus(L10n.s(R.string.disconnected_status))
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 connected = false
                 transportAlive = false
                 onTvNow?.invoke("")
-                val reason = t.message ?: "нет соединения"
-                log("✖ Ошибка WS: $reason")
-                onStatus("Ошибка: $reason")
+                val reason = t.message ?: L10n.s(R.string.no_connection)
+                log(L10n.s(R.string.sr_ws_error, reason))
+                onStatus(L10n.s(R.string.sr_status_error, reason))
             }
         })
     }
@@ -241,7 +241,7 @@ class SamsungRemote(
                 connected = true
                 val t = obj.optJSONObject("data")?.optString("token")
                 if (!t.isNullOrBlank()) {
-                    log("✔ Авторизация пройдена, токен получен (${t.take(3)}...) и сохранён")
+                    log(L10n.s(R.string.sr_auth_ok, t.take(3)))
                     onToken(t)
                 }
                 // v3.0: часть прошивок кладёт в connect текущий канал/приложение — покажем
@@ -267,21 +267,21 @@ class SamsungRemote(
                         })
                     })
                 }
-                onStatus("Подключено к ТВ ✔")
+                onStatus(L10n.s(R.string.connected))
             }
 
             "ms.channel.unauthorized" -> {
                 connected = false
-                log("ТВ отклонил доступ (unauthorized)")
+                log(L10n.s(R.string.unauthorized_log))
                 // Чужой/устаревший токен (например, унаследованный от другой прошивки)
                 // — переподключаемся без него, ТВ покажет «Разрешить»
                 if (!token.isNullOrBlank() && !unauthRetried) {
                     unauthRetried = true
-                    log("Переподключаюсь без токена — подтвердите «Разрешить» на ТВ")
+                    log(L10n.s(R.string.reconnect_no_token))
                     try { ws?.close(1000, "retry") } catch (_: Exception) {}
                     openWs(withToken = false)
                 } else {
-                    onStatus("Нажмите «Подключ.» ещё раз и выберите «Разрешить» на ТВ")
+                    onStatus(L10n.s(R.string.press_allow))
                 }
             }
 
@@ -291,14 +291,14 @@ class SamsungRemote(
                 if (wsProbeActive) {
                     // Проба ws://8001 пройдена: ТВ отвечает как полноценный Tizen
                     wsProbeActive = false
-                    log("проба API: ТВ ответил списком (${apps.size} шт.) — сеанс полноценный")
+                    log(L10n.s(R.string.sr_probe_api_ok, apps.size))
                 }
                 val buf = pendingApps
                 if (buf != null) {
                     buf.addAll(apps)
-                    log("WS-список: +${apps.size} шт.")
+                    log(L10n.s(R.string.sr_ws_apps, apps.size))
                 } else {
-                    log("Список приложений: ${apps.size} шт.")
+                    log(L10n.s(R.string.sr_apps_total, apps.size))
                     if (apps.isNotEmpty()) onApps(apps, false)
                 }
             }
@@ -306,20 +306,20 @@ class SamsungRemote(
             "ed.apps.launch" -> {
                 val code = obj.optInt("data", -1)
                 launchAck = true
-                log(if (code == 200) "✔ ТВ подтвердил запуск приложения (код 200)" else "ТВ ответил на запуск приложения: $code")
+                log(if (code == 200) L10n.s(R.string.launch_200) else L10n.s(R.string.sr_launch_code, code))
             }
 
             // ТВ сообщает об открытии/закрытии экранной клавиатуры:
             // текст принимается только пока клавиатура открыта (поле ввода в фокусе)
             "ms.remote.imeStart" -> {
                 imeSeen = true
-                log("⌨ ТВ: клавиатура открыта — теперь текст можно отправлять")
+                log(L10n.s(R.string.ime_open))
             }
-            "ms.remote.imeEnd" -> log("ТВ: клавиатура закрыта — текст больше не принимается")
+            "ms.remote.imeEnd" -> log(L10n.s(R.string.ime_closed))
 
             "ms.error" -> {
                 val msg = obj.optJSONObject("data")?.optString("message")
-                log("!! ТВ сообщил об ошибке: ${msg ?: obj.toString().take(200)}")
+                log(L10n.s(R.string.sr_error_event, msg ?: obj.toString().take(200)))
                 if (wsProbeActive) {
                     val m = msg ?: ""
                     val orsayLike = m.contains("unrecognized", true) ||
@@ -329,7 +329,7 @@ class SamsungRemote(
                         if (wsProbeErrors >= 2) {
                             wsProbeActive = false
                             rejected = true
-                            log("✖ оба API-запроса отклонены — ws://8001 не поддерживает управление (старая прошивка). Пробую следующий протокол")
+                            log(L10n.s(R.string.sr_ws_rejected))
                             try { ws?.close(1000, "probe") } catch (_: Exception) {}
                             connected = false
                             transportAlive = false
@@ -343,10 +343,10 @@ class SamsungRemote(
 
             // ТВ включает/выключает touch-режим (браузер и приложения с курсором).
             // Это уведомление о состоянии: протокол мыши (ProcessMouseDevice) не меняется.
-            "ms.remote.touchEnable" -> log("ТВ: touch-режим включён — текущее приложение принимает мышь/тачпад")
-            "ms.remote.touchDisable" -> log("ТВ: touch-режим выключен")
+            "ms.remote.touchEnable" -> log(L10n.s(R.string.touch_on))
+            "ms.remote.touchDisable" -> log(L10n.s(R.string.touch_off))
 
-            else -> log("событие: ${obj.optString("event")}")
+            else -> log(L10n.s(R.string.sr_event, obj.optString("event")))
         }
     }
 
@@ -365,9 +365,9 @@ class SamsungRemote(
         val buf = pendingSmartApps
         if (buf != null) {
             buf.addAll(apps)
-            log("smart-канал: ed-событие принесло список +${apps.size} шт.")
+            log(L10n.s(R.string.sr_ed_apps_plus, apps.size))
         } else {
-            log("smart-канал: ed-событие принесло список ${apps.size} шт.")
+            log(L10n.s(R.string.sr_ed_apps, apps.size))
             onApps(apps, false)
         }
     }
@@ -409,10 +409,10 @@ class SamsungRemote(
     private fun send(payload: JSONObject, quiet: Boolean = false) {
         val sent = ws?.send(payload.toString()) ?: false
         if (sent) {
-            if (!quiet) log("▶ К ТВ: ${payload}")
+            if (!quiet) log(L10n.s(R.string.sr_out, payload))
         } else {
-            log("!! НЕ отправлено — соединение закрыто. Нажмите «Подключ.»")
-            onStatus("Соединение потеряно — нажмите «Подключ.»")
+            log(L10n.s(R.string.not_sent))
+            onStatus(L10n.s(R.string.connection_lost))
         }
     }
 
@@ -433,7 +433,7 @@ class SamsungRemote(
     fun sendMouseMove(dx: Int, dy: Int) {
         if (!supportsMouse()) return
         if (!mouseMoveLogged) {
-            log("▶ мышь: ProcessMouseDevice Move — дельта ($dx,$dy); дальнейшие Move в журнал не пишутся")
+            log(L10n.s(R.string.sr_mouse_move, dx, dy))
             mouseMoveLogged = true
         }
         send(JSONObject().apply {
@@ -464,18 +464,18 @@ class SamsungRemote(
                   else ch.optString("major").ifBlank { ch.optString("chanNum") }
         if (name.isBlank() && num.isBlank()) return
         val label = when {
-            num.isNotBlank() && name.isNotBlank() -> "канал $num — $name"
-            num.isNotBlank() -> "канал $num"
+            num.isNotBlank() && name.isNotBlank() -> L10n.s(R.string.sr_channel_full, num, name)
+            num.isNotBlank() -> L10n.s(R.string.sr_channel_num, num)
             else -> name
         }
-        log("На ТВ: $label")
+        log(L10n.s(R.string.on_tv_fmt, label))
         onTvNow?.invoke(label)
     }
 
     /** Клик левой кнопкой мыши в текущей позиции курсора (тачпад, режим мыши) */
     fun sendMouseClick() {
         if (!supportsMouse()) return
-        log("▶ мышь: LeftClick в позиции курсора")
+        log(L10n.s(R.string.mouse_left))
         send(JSONObject().apply {
             put("method", "ms.remote.control")
             put("params", JSONObject().apply {
@@ -489,7 +489,7 @@ class SamsungRemote(
      *  Формат подтверждён samsungctl: Cmd=RightClick, TypeOfRemote=ProcessMouseDevice. */
     fun sendMouseRightClick() {
         if (!supportsMouse()) return
-        log("▶ мышь: RightClick в позиции курсора")
+        log(L10n.s(R.string.mouse_right))
         send(JSONObject().apply {
             put("method", "ms.remote.control")
             put("params", JSONObject().apply {
@@ -533,8 +533,8 @@ class SamsungRemote(
      */
     fun sendTextSmart(text: String) {
         if (isLegacy() || isSmart()) {
-            log("Ввод текста недоступен по старому протоколу (${if (isSmart()) "Smart View 2.0" else "55000"})")
-            onStatus("На старых ТВ (до 2016) ввод текста недоступен")
+            log(L10n.s(R.string.sr_text_unavail_log, if (isSmart()) "Smart View 2.0" else "55000"))
+            onStatus(L10n.s(R.string.text_unavail_status))
             return
         }
         if (text.isEmpty()) return
@@ -569,9 +569,8 @@ class SamsungRemote(
             })
 
             if (!imeSeen) {
-                log("Подсказка: ТВ принимает текст только когда открыто поле ввода. " +
-                    "Откройте на ТВ поиск (HOME → Поиск или значок лупы), поставьте курсор в строку и повторите отправку")
-                onStatus("⌨ Откройте поле ввода/поиск на ТВ и повторите отправку")
+                log(L10n.s(R.string.sr_text_hint_log))
+                onStatus(L10n.s(R.string.text_hint_status))
             }
         }.start()
     }
@@ -595,21 +594,21 @@ class SamsungRemote(
                 return@Thread
             }
 
-            log("ТВ не подтвердил DEEP_LINK — пробую NATIVE_LAUNCH")
+            log(L10n.s(R.string.deeplink_fallback))
             sendLaunchWs(appId, "NATIVE_LAUNCH", data)
             if (awaitLaunchAck(3000)) {
                 if (data != null || name != null) onTvNow?.invoke(name ?: appId)
                 return@Thread
             }
 
-            log("WS-запуск не подтверждён — пробую REST POST (порт 8001, затем 8002)")
+            log(L10n.s(R.string.ws_launch_fallback))
             val t = token
             var code = restGet("http", 8001, "applications/$appId", "POST").first
             if (code == 401 && !t.isNullOrBlank()) {
                 code = restGet("http", 8001, "applications/$appId?token=$t", "POST").first
             }
             if (code in 200..299) {
-                log("✔ Приложение запущено (REST 8001, HTTP $code)")
+                log(L10n.s(R.string.sr_launch_rest1, code))
                 onTvNow?.invoke(name ?: appId)
                 return@Thread
             }
@@ -618,10 +617,10 @@ class SamsungRemote(
                 code2 = restGet("https", 8002, "applications/$appId?token=$t", "POST").first
             }
             if (code2 in 200..299) {
-                log("✔ Приложение запущено (REST 8002, HTTP $code2)")
+                log(L10n.s(R.string.sr_launch_rest2, code2))
                 onTvNow?.invoke(name ?: appId)
             } else {
-                log("REST не сработал: 8001=$code, 8002=$code2 — возможно, приложение не установлено или эндпоинта нет на этой прошивке")
+                log(L10n.s(R.string.sr_rest_fail, code, code2))
             }
         }.start()
     }
@@ -660,8 +659,8 @@ class SamsungRemote(
         onFail: (() -> Unit)? = null
     ) {
         if (isLegacy() || isSmart()) {
-            log("Запуск «$label» недоступен по старому протоколу (только Tizen 2016+)")
-            onStatus("Это работает только на Tizen (2016+)")
+            log(L10n.s(R.string.sr_launch_legacy_unavail, label))
+            onStatus(L10n.s(R.string.sr_tizen_only_status))
             return
         }
         launchAck = false
@@ -669,23 +668,23 @@ class SamsungRemote(
             for (id in appIds) {
                 sendLaunchWs(id, "DEEP_LINK", data)
                 if (awaitLaunchAck(2500)) {
-                    log("✔ ТВ подтвердил запуск — $label (id=$id, DEEP_LINK)")
+                    log(L10n.s(R.string.sr_launch_dl_ok, label, id))
                     onTvNow?.invoke(label)
                     return@Thread
                 }
                 sendLaunchWs(id, "NATIVE_LAUNCH", data)
                 if (awaitLaunchAck(2500)) {
-                    log("✔ ТВ подтвердил запуск — $label (id=$id, NATIVE_LAUNCH)")
+                    log(L10n.s(R.string.sr_launch_nl_ok, label, id))
                     onTvNow?.invoke(label)
                     return@Thread
                 }
-                log("ТВ не подтвердил запуск id=$id — пробую следующего кандидата")
+                log(L10n.s(R.string.sr_launch_next, id))
             }
             if (onFail != null) {
-                log("Запуск приложения с payload не подтверждён — использую запасной путь")
+                log(L10n.s(R.string.payload_fallback))
                 onFail.invoke()
             } else {
-                onStatus("ТВ не подтвердил запуск — подробности в журнале")
+                onStatus(L10n.s(R.string.launch_fail_log))
             }
         }.start()
     }
@@ -698,7 +697,7 @@ class SamsungRemote(
     fun launchBrowserUrl(url: String) {
         launchWsAppWithPayload(
             listOf("org.tizen.browser", "3201907018784", "3202010022079", "3201512001"),
-            "Браузер: $url",
+            L10n.s(R.string.sr_browser_on_tv, url),
             JSONObject().put("url", url)
         )
     }
@@ -713,7 +712,7 @@ class SamsungRemote(
     fun launchYouTubeVideo(raw: String) {
         val id = extractYouTubeId(raw)
         if (id == null) {
-            log("Не похоже на ссылку/ID YouTube — открываю в браузере ТВ")
+            log(L10n.s(R.string.not_youtube))
             launchBrowserUrl(raw)
             return
         }
@@ -811,10 +810,10 @@ class SamsungRemote(
                     for (a in list) addApp(a)
                 }
             }
-            log("Список: WS → $wsCount шт., REST → $restCount шт., объединено → ${found.size}")
+            log(L10n.s(R.string.sr_list_merged, wsCount, restCount, found.size))
 
             // Стратегия 3: известные ID — ВСЕГДА, параллельно в 8 потоков
-            log("Проверяю ${KNOWN_APPS.size} известных ID (200 = установлено)…")
+            log(L10n.s(R.string.sr_probe_known, KNOWN_APPS.size))
             val t = token
             val probeHits = Collections.synchronizedList(mutableListOf<AppInfo>())
             val pool = Executors.newFixedThreadPool(8)
@@ -848,7 +847,7 @@ class SamsungRemote(
             }
             pool.shutdownNow()
             for (a in probeHits) addApp(a)
-            log("Пробы известных ID: найдено ${probeHits.size}")
+            log(L10n.s(R.string.sr_probe_hits, probeHits.size))
 
             // Если совсем пусто — один подробный запрос для диагностики в журнале
             if (found.isEmpty()) {
@@ -857,10 +856,10 @@ class SamsungRemote(
 
             if (found.isNotEmpty()) {
                 found.sortWith(compareBy { it.name.lowercase(Locale.ROOT) })
-                log("✔ Итого приложений: ${found.size}")
+                log(L10n.s(R.string.sr_total_apps, found.size))
                 onApps(found, false)
             } else {
-                log("Список получить не удалось — пришлите журнал целиком: по кодам 404/401/-1 видно, что отвечает прошивка")
+                log(L10n.s(R.string.list_fail_advice))
                 onApps(emptyList(), false)
             }
         }.start()
@@ -884,8 +883,8 @@ class SamsungRemote(
     private fun requestAppsOrsay() {
         Thread {
             val port = orsayPort()
-            onStatus("Ищу приложения на ТВ (REST :$port)…")
-            log("Orsay: приложения — smart-канал, корень /ws/apps/, /api/v2, ${ORSAY_DIAL_NAMES.size} DIAL-имён + ${ORSAY_KNOWN_APPS.size} ID…")
+            onStatus(L10n.s(R.string.sr_searching_rest, port))
+            log(L10n.s(R.string.sr_orsay_strats, ORSAY_DIAL_NAMES.size, ORSAY_KNOWN_APPS.size))
 
             val found = mutableListOf<AppInfo>()
             val seenIds = mutableSetOf<String>()
@@ -910,7 +909,7 @@ class SamsungRemote(
                 smartCount = smartApps.size
                 for (a in smartApps) addApp(a)
             } else {
-                log("smart-канал не активен — ed-проба пропущена")
+                log(L10n.s(R.string.ed_skip))
             }
 
             // Стратегия 2: корень /ws/apps/ (тело ответа — в журнал всегда)
@@ -918,7 +917,7 @@ class SamsungRemote(
             try {
                 val (rc, rb) = orsayRest(port, "ws/apps/", "GET")
                 if (rb.isNotBlank()) {
-                    log("↳ тело /ws/apps/: ${rb.take(400).replace('\n', ' ')}")
+                    log(L10n.s(R.string.sr_ws_apps_body, rb.take(400).replace('\n', ' ')))
                 }
                 if (rc in 200..299) {
                     val parsed = parseOrsayAppList(rb)
@@ -961,24 +960,24 @@ class SamsungRemote(
                 try { f.get(30, TimeUnit.SECONDS) } catch (_: Exception) {}
             }
             pool.shutdownNow()
-            firstMiss.firstOrNull()?.let { log("↳ пример отказа ТВ: $it") }
+            firstMiss.firstOrNull()?.let { log(L10n.s(R.string.sr_miss_example, it)) }
             for (a in hits) addApp(a)
 
-            log("Поиск приложений: smart-канал → $smartCount, /ws/apps/ → $rootCount, /api/v2 → $apiCount, пробы имён/ID → ${hits.size}; уникальных → ${found.size}")
+            log(L10n.s(R.string.sr_search_summary, smartCount, rootCount, apiCount, hits.size, found.size))
 
             val list = found.distinctBy { it.name.lowercase(Locale.ROOT) }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
             if (list.isNotEmpty()) {
-                log("✔ Найдено установленных: ${list.size}")
-                onStatus("Найдено приложений: ${list.size}")
+                log(L10n.s(R.string.sr_installed_found, list.size))
+                onStatus(L10n.s(R.string.sr_apps_found_status, list.size))
                 onApps(list, false)
             } else {
-                log("✖ Ни один ID/имя не подтвердился — LIST-эндпоинта на Orsay нет; открываю каталог (запуск POST-ом проверит установку)")
+                log(L10n.s(R.string.no_list_orsay))
                 val catalog = ORSAY_KNOWN_APPS
                     .distinctBy { it.second.lowercase(Locale.ROOT) }
                     .map { AppInfo(it.first, it.second) }
                     .sortedBy { it.name.lowercase(Locale.ROOT) }
-                onStatus("Каталог приложений — запуск покажет, установлено ли")
+                onStatus(L10n.s(R.string.catalog_status))
                 onApps(catalog, true)
             }
         }.start()
@@ -1019,7 +1018,7 @@ class SamsungRemote(
             val nm = name?.trim()?.takeUnless { it.isEmpty() || it.equals(appId, true) }
             if (code !in 200..299 && nm != null) {
                 val nmEnc = URLEncoder.encode(nm, "UTF-8").replace("+", "%20")
-                log("ID не сработал — пробую DIAL-запуск по имени «$nm»…")
+                log(L10n.s(R.string.sr_dial_try, nm))
                 var r = orsayRest(port, "ws/apps/$nmEnc/run", "POST")
                 code = r.first; body = r.second
                 if (code !in 200..299) {
@@ -1028,12 +1027,12 @@ class SamsungRemote(
                 }
             }
             if (code in 200..299) {
-                log("✔ Приложение запущено (HTTP $code)${if (body.isNotBlank()) " :: " + body.take(120).replace('\n', ' ') else ""}")
+                log(L10n.s(R.string.sr_launch_http, code) + if (body.isNotBlank()) " :: " + body.take(120).replace('\n', ' ') else "")
                 onTvNow?.invoke(name ?: appId)
-                onStatus("Приложение запускается…")
+                onStatus(L10n.s(R.string.launching))
             } else {
-                log("✖ Запуск не удался (HTTP $code) — приложение не установлено или ID не подходит этой прошивке")
-                onStatus("Не удалось запустить приложение (HTTP $code)")
+                log(L10n.s(R.string.sr_launch_fail, code))
+                onStatus(L10n.s(R.string.sr_launch_fail_status, code))
             }
         }.start()
     }
@@ -1153,26 +1152,26 @@ class SamsungRemote(
         }
         Thread {
             for (k in listOf("KEY_POWEROFF", "KEY_POWER", "KEY_POWERTOGGLE")) {
-                log("POWER: отправляю $k…")
+                log(L10n.s(R.string.sr_power_trying, k))
                 sendKey(k)
                 Thread.sleep(2500)
                 if (TvDiscovery.verify(host, 1200) == null) {
-                    log("✔ ТВ выключился (сработал $k)")
-                    onStatus("ТВ выключен — POWER снова включит его по сети")
+                    log(L10n.s(R.string.sr_power_off_ok, k))
+                    onStatus(L10n.s(R.string.power_off_hint))
                     return@Thread
                 }
-                log("$k не выключил ТВ — пробую следующий вариант")
+                log(L10n.s(R.string.sr_power_next, k))
             }
             // 4-я попытка: Press + Release (Click игнорируется частью прошивок)
-            log("POWER: отправляю KEY_POWER (Press+Release)…")
+            log(L10n.s(R.string.sr_power_pr))
             sendPressRelease("KEY_POWER")
             Thread.sleep(2500)
             if (TvDiscovery.verify(host, 1200) == null) {
-                log("✔ ТВ выключился (сработал Press+Release)")
-                onStatus("ТВ выключен — POWER снова включит его по сети")
+                log(L10n.s(R.string.power_pr_ok))
+                onStatus(L10n.s(R.string.power_off_hint))
                 return@Thread
             }
-            onStatus("ТВ не отреагировал на POWER — подробности в журнале")
+            onStatus(L10n.s(R.string.power_fail))
         }.start()
     }
 
@@ -1236,9 +1235,9 @@ class SamsungRemote(
          * YouTube (111299001912) и Netflix убраны — по решению владельца пульта.
          */
         val KNOWN_APPS: List<Pair<String, String>> = listOf(
-            "org.tizen.browser" to "Интернет",
-            "3201907018784" to "Интернет (2020+)",
-            "3202010022079" to "Интернет (2021+)",
+            "org.tizen.browser" to L10n.s(R.string.app_internet),
+            "3201907018784" to L10n.s(R.string.app_internet20),
+            "3202010022079" to L10n.s(R.string.app_internet21),
             "3202405035480" to "Samsung TV Plus",
             "3201606009684" to "Spotify",
             "3202203026841" to "Twitch",
@@ -1249,7 +1248,7 @@ class SamsungRemote(
             "3201512006963" to "Plex",
             "3201606009872" to "Emby",
             "3201910019365" to "Prime Video",
-            "3201512006785" to "Prime Video (стар. ID)",
+            "3201512006785" to L10n.s(R.string.app_prime_old),
             "3201807016597" to "Apple TV",
             "3201908019041" to "Apple Music",
             "3201710014874" to "Amazon Music",
@@ -1277,7 +1276,7 @@ class SamsungRemote(
             "111299001912" to "YouTube",
             "11101200001" to "Netflix",
             "320160600" to "Netflix",
-            "32015010026" to "Веб-браузер",
+            "32015010026" to L10n.s(R.string.app_browser),
             "11091000000" to "Facebook",
             "121299000101" to "TuneIn Radio",
             "111399000741" to "The Weather Network",

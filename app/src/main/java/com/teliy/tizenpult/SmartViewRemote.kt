@@ -83,17 +83,17 @@ class SmartViewRemote(
                 if (!savedAuth.isNullOrBlank() && savedAuth.contains("|")) {
                     tokenHex = savedAuth.substringBefore("|")
                     sessionId = savedAuth.substringAfter("|")
-                    log("Smart View 2.0: используем сохранённое сопряжение (токен ${tokenHex?.take(8)}...)")
+                    log(L10n.s(R.string.sv_saved_pairing, tokenHex?.take(8)))
                 }
 
                 val restPort = pickRestPort()
                     ?: run {
-                        log("✖ Smart View 2.0: нет ответа на портах 8080/8000 (REST)")
-                        onStatus("Старый ТВ не ответил на порту 8080/8000")
+                        log(L10n.s(R.string.sv_no_rest))
+                        onStatus(L10n.s(R.string.sv_old_tv_no_answer))
                         fail()
                         return@Thread
                     }
-                log("Smart View 2.0: REST-порт $restPort")
+                log(L10n.s(R.string.sv_rest_port, restPort))
                 restPortChosen = restPort
 
                 if (tokenHex == null) {
@@ -106,7 +106,7 @@ class SmartViewRemote(
                 openCommandChannel(restPort)
             } catch (e: Exception) {
                 log("✖ Smart View 2.0: ${e.message}")
-                onStatus("Ошибка старого протокола: ${e.message}")
+                onStatus(L10n.s(R.string.sv_err_status, e.message))
                 fail()
             }
         }.start()
@@ -124,7 +124,7 @@ class SmartViewRemote(
     fun sendKey(key: String) {
         val w = ws
         if (!authOk || w == null) {
-            log("!! нет сеанса Smart View 2.0 — нажмите «Подключ.»")
+            log(L10n.s(R.string.sv_no_session))
             return
         }
         // формат json.dumps (как в эталоне): пробелы после «:» и «,» — байт-в-байт
@@ -134,7 +134,7 @@ class SmartViewRemote(
             "\"param4\": false, \"api\": \"SendRemoteKey\", \"version\": \"1.000\"}}"
         val frame = encryptFrame(payload)
         val sent = w.send(frame)
-        log(if (sent) "▶ $key (Smart View 2.0)" else "!! НЕ отправлено — соединение закрыто")
+        log(if (sent) L10n.s(R.string.sv_key_sent, key) else L10n.s(R.string.sv_not_sent_short))
     }
 
     /**
@@ -145,11 +145,11 @@ class SmartViewRemote(
     fun emitRaw(bodyJson: String) {
         val w = ws
         if (!authOk || w == null) {
-            log("!! нет сеанса Smart View 2.0 — нажмите «Подключ.»")
+            log(L10n.s(R.string.sv_no_session))
             return
         }
         val sent = w.send(encryptFrame(bodyJson))
-        log(if (sent) "▶ callCommon: ${bodyJson.take(100)}" else "!! НЕ отправлено — соединение закрыто")
+        log(if (sent) L10n.s(R.string.sv_call_sent, bodyJson.take(100)) else L10n.s(R.string.sv_not_sent_short))
     }
 
     fun close() {
@@ -168,11 +168,11 @@ class SmartViewRemote(
         log("CloudPINPage: HTTP $code, state=${state ?: "?"}")
         if (state == null || state == "stopped") {
             val (pcode, _) = http(restPort, "POST", "ws/apps/CloudPINPage", "pin4")
-            log("Запрос PIN на ТВ: HTTP $pcode (на экране ТВ появится 4-значный PIN)")
+            log(L10n.s(R.string.sv_pin_request, pcode))
         } else {
-            log("PIN уже отображается на ТВ")
+            log(L10n.s(R.string.sv_pin_shown))
         }
-        onStatus("Введите PIN, который появился на экране ТВ")
+        onStatus(L10n.s(R.string.sv_enter_pin_status))
 
         // Шаг 1 с PIN (до 3 попыток). Шаг 0 — перед КАЖДОЙ попыткой, как в эталоне
         // (try_pin() = шаг 0 + шаг 1): после неудачной попытки ТВ ждёт нового шага 0,
@@ -180,20 +180,20 @@ class SmartViewRemote(
         var result: SmartViewCrypto.ClientHelloResult? = null
         for (attempt in 1..3) {
             val pin = askPin(retry = attempt > 1) ?: run {
-                log("Ввод PIN отменён")
-                onStatus("Сопряжение отменено")
+                log(L10n.s(R.string.sv_pin_cancelled))
+                onStatus(L10n.s(R.string.sv_pairing_cancelled))
                 closePinPage(restPort)
                 return false
             }
             val step0 = http(restPort, "GET", pairingUrl(0) + "&type=1", null)
-            log("Сопряжение шаг 0: HTTP ${step0.first}")
+            log(L10n.s(R.string.sv_step0, step0.first))
             val hello = SmartViewCrypto.generateServerHello(USER_ID, pin)
             val content = "{\"auth_Data\":{\"auth_type\":\"SPC\",\"GeneratorServerHello\":\"" +
                 hello.serverHelloHex + "\"}}"
             val (code1, resp1) = http(restPort, "POST", pairingUrl(1), content)
-            log("Сопряжение шаг 1: HTTP $code1")
+            log(L10n.s(R.string.sv_step1, code1))
             if (code1 !in 200..299) {
-                log("ТВ отклонил ServerHello (HTTP $code1): ${resp1.take(160)}")
+                log(L10n.s(R.string.sv_serverhello_rejected, code1, resp1.take(160)))
                 continue
             }
             val clientHello = Regex(
@@ -201,15 +201,15 @@ class SmartViewRemote(
                 RegexOption.IGNORE_CASE
             ).find(resp1)?.groupValues?.get(1)
             if (clientHello == null) {
-                log("В ответе ТВ нет GeneratorClientHello: ${resp1.take(120)}")
+                log(L10n.s(R.string.sv_no_hello, resp1.take(120)))
                 continue
             }
             result = SmartViewCrypto.parseClientHello(clientHello, hello.dataHash, hello.aesKey, USER_ID)
             if (result != null) break
-            log("PIN неверный — ТВ не подтвердил (хэш не совпал)")
+            log(L10n.s(R.string.sv_pin_wrong))
         }
         val auth = result ?: run {
-            onStatus("PIN не принят — попробуйте ещё раз («Подключ.»)")
+            onStatus(L10n.s(R.string.sv_pin_not_accepted))
             closePinPage(restPort)
             return false
         }
@@ -219,10 +219,10 @@ class SmartViewRemote(
         val content2 = "{\"auth_Data\":{\"auth_type\":\"SPC\",\"request_id\":\"0\",\"ServerAckMsg\":\"" +
             serverAck + "\"}}"
         val (code2, resp2) = http(restPort, "POST", pairingUrl(2), content2)
-        log("Сопряжение шаг 2: HTTP $code2")
+        log(L10n.s(R.string.sv_step2, code2))
         if (code2 !in 200..299) {
-            log("✖ ТВ отклонил подтверждение сопряжения: ${resp2.take(160)}")
-            onStatus("ТВ отклонил подтверждение — нажмите «Подключ.» и введите PIN заново")
+            log(L10n.s(R.string.sv_pair_rejected, resp2.take(160)))
+            onStatus(L10n.s(R.string.sv_pair_rejected_status))
             closePinPage(restPort)
             return false
         }
@@ -231,8 +231,8 @@ class SmartViewRemote(
             JSONObject(resp2).optString("auth_data", "").ifBlank { resp2 }
         } catch (_: Exception) { resp2 }
         if (authData.isBlank()) {
-            log("✖ ТВ вернул пустой auth_data — окно PIN истекло, повторите сопряжение")
-            onStatus("Окно PIN истекло — нажмите «Подключ.» и введите PIN заново")
+            log(L10n.s(R.string.sv_empty_auth))
+            onStatus(L10n.s(R.string.sv_pin_expired))
             closePinPage(restPort)
             return false
         }
@@ -243,15 +243,15 @@ class SmartViewRemote(
         val session = Regex("session_id[^0-9]*(\\d+)", RegexOption.IGNORE_CASE)
             .find(authData)?.groupValues?.get(1)
         if (clientAck == null || session == null) {
-            log("✖ В ответе нет ClientAckMsg/session_id: ${resp2.take(160)}")
-            onStatus("Неожиданный ответ ТВ — попробуйте сопряжение заново")
+            log(L10n.s(R.string.sv_no_ack, resp2.take(160)))
+            onStatus(L10n.s(R.string.sv_unexpected))
             closePinPage(restPort)
             return false
         }
         val expectedAck = SmartViewCrypto.expectedClientAcknowledge(auth.skPrime)
         if (!clientAck.equals(expectedAck, ignoreCase = true)) {
-            log("✖ ClientAckMsg ТВ не совпал с ожидаемым")
-            onStatus("ТВ не подтвердил сеанс — попробуйте сопряжение заново")
+            log(L10n.s(R.string.sv_ack_mismatch))
+            onStatus(L10n.s(R.string.sv_session_not_confirmed))
             closePinPage(restPort)
             return false
         }
@@ -262,7 +262,7 @@ class SmartViewRemote(
         tokenHex = auth.ctxHex
         sessionId = session
         onSavedAuth("${auth.ctxHex}|$session")
-        log("✔ Сопряжение завершено: токен ${auth.ctxHex.take(8)}..., session_id=$session — сохранено")
+        log(L10n.s(R.string.sv_paired, auth.ctxHex.take(8), session))
         return true
     }
 
@@ -296,24 +296,24 @@ class SmartViewRemote(
             if (code in 200..299 && body.isNotBlank()) {
                 wsPort = port
                 app = body.split(":").firstOrNull()?.trim() ?: ""
-                log("socket.io на порту $port: id=$app")
+                log(L10n.s(R.string.sv_socketio, port, app))
                 break
             }
         }
         if (app.isBlank()) {
-            log("✖ socket.io не ответил на портах 8000/8080")
-            onStatus("Командный канал старого ТВ недоступен")
+            log(L10n.s(R.string.sv_socketio_fail))
+            onStatus(L10n.s(R.string.sv_cmd_channel_fail))
             fail()
             return
         }
 
         val url = "ws://$host:$wsPort/socket.io/1/websocket/$app"
-        log("Открываю командный канал: ws://$host:$wsPort …")
+        log(L10n.s(R.string.sv_opening_channel, host, wsPort))
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 onTransport(true)
-                log("Канал открыт (HTTP ${response.code}) — вход в /com.samsung.companion")
+                log(L10n.s(R.string.sv_channel_open, response.code))
                 webSocket.send("1::/com.samsung.companion")
                 // небольшой запас на кадр подтверждения — затем сеанс готов
                 Thread {
@@ -333,21 +333,21 @@ class SmartViewRemote(
                     // и отдаём верхнему уровню (разбор ed.*-событий, если прошивка умеет)
                     text.startsWith("5::/com.samsung.companion:") -> {
                         val dec = decryptFrameText(text)
-                        log("◀ ТВ: ${dec.take(220)}")
+                        log(L10n.s(R.string.sr_frame_in, dec.take(220)))
                         onFrame(dec)
                     }
-                    else -> log("◀ ТВ: ${text.take(200)}")
+                    else -> log(L10n.s(R.string.sr_frame_in, text.take(200)))
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                log("Канал Smart View 2.0 закрыт (code=$code)")
+                log(L10n.s(R.string.sv_channel_closed, code))
                 shutdown()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (!stopping) {
-                    log("✖ Ошибка канала: ${t.message}")
+                    log(L10n.s(R.string.sv_channel_error, t.message))
                     shutdown()
                 }
             }
@@ -357,8 +357,8 @@ class SmartViewRemote(
     private fun markConnected() {
         if (authOk) return
         authOk = true
-        log("✔ Smart View 2.0 подключён — клавиши работают")
-        onStatus("Подключено к ТВ (старый протокол) ✔")
+        log(L10n.s(R.string.sv_connected))
+        onStatus(L10n.s(R.string.connected_legacy))
         onAuth(true)
     }
 
@@ -385,7 +385,7 @@ class SmartViewRemote(
             val clean = if (pad in 1..16 && dec.size > pad) dec.copyOfRange(0, dec.size - pad) else dec
             String(clean, Charsets.UTF_8)
         } catch (e: Exception) {
-            "— (не расшифровано: ${e.message ?: "?"})"
+            L10n.s(R.string.sv_frame_unparsed, e.message ?: "?")
         }
     }
 

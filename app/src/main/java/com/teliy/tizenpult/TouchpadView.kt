@@ -224,7 +224,7 @@ class TouchpadView(
             c.drawCircle(cx, cy, dp(2.2f), dotPaint)
             dimPaint.textAlign = Paint.Align.CENTER
             dimPaint.textSize = dp(12f)
-            c.drawText("курсор ТВ; тап — клик, удержание — правый клик", w / 2f, h - dp(10f), dimPaint)
+            c.drawText(L10n.s(R.string.tp_hint_mouse), w / 2f, h - dp(10f), dimPaint)
         } else {
             dimPaint.textAlign = Paint.Align.CENTER
             dimPaint.textSize = dp(26f)
@@ -234,7 +234,7 @@ class TouchpadView(
             c.drawText("▼", w / 2f, h - dp(12f), p("KEY_DOWN"))
             c.drawText("◀", dp(20f), h / 2f + dp(9f), p("KEY_LEFT"))
             c.drawText("▶", w - dp(20f), h / 2f + dp(9f), p("KEY_RIGHT"))
-            c.drawText("тап = OK", w / 2f, h / 2f + dp(8f), dimPaint)
+            c.drawText(L10n.s(R.string.tp_hint_arrows), w / 2f, h / 2f + dp(8f), dimPaint)
         }
     }
 }

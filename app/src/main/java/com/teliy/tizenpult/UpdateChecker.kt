@@ -89,7 +89,7 @@ object UpdateChecker {
         val code = conn.responseCode
         if (code !in 200..299) {
             conn.disconnect()
-            throw Exception("Скачивание: HTTP $code")
+            throw Exception(L10n.s(R.string.uc_http, code))
         }
         val total = conn.contentLengthLong
         dest.parentFile?.mkdirs()
@@ -108,7 +108,7 @@ object UpdateChecker {
                     }
                 }
             }
-            if (total > 0 && done < total) throw Exception("Скачано $done из $total байт")
+            if (total > 0 && done < total) throw Exception(L10n.s(R.string.uc_partial, done, total))
             if (!tmp.renameTo(dest)) {
                 tmp.copyTo(dest, overwrite = true)
                 tmp.delete()

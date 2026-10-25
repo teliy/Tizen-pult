@@ -70,7 +70,7 @@ class LegacyRemote(
     fun connect() {
         Thread {
             try {
-                onStatus(if (encrypted) "Подключение к ТВ (порт 55000, AES)…" else "Подключение к ТВ (порт 55000)…")
+                onStatus(if (encrypted) L10n.s(R.string.lr_connecting_aes) else L10n.s(R.string.lr_connecting))
                 val s = Socket()
                 s.tcpNoDelay = true
                 s.connect(InetSocketAddress(host, 55000), 5000)
@@ -79,20 +79,20 @@ class LegacyRemote(
                 input = s.getInputStream()
                 output = s.getOutputStream()
                 onTransport(true)
-                log("порт 55000 открыт${if (encrypted) ", режим AES" else ""}")
+                log(L10n.s(R.string.lr_port_open) + if (encrypted) L10n.s(R.string.lr_aes_mode) else "")
 
                 // Handshake как в samsungctl: payload = 64 00 + описание + id + имя
                 var payload = byteArrayOf(0x64, 0x00)
-                payload += chunk("Android пульт")
+                payload += chunk(L10n.s(R.string.lr_device_name))
                 payload += chunk("tizenpult")
                 payload += chunk("Tizen Pult")
                 write(byteArrayOf(0x00, 0x00, 0x00) + chunkRaw(payload))
-                log("handshake отправлен; при первом подключении на ТВ появится окно «Разрешить?»")
+                log(L10n.s(R.string.lr_handshake_sent))
 
                 Thread { readerLoop() }.start()
             } catch (e: Exception) {
-                log("✖ старый протокол (55000): ${e.message}")
-                onStatus("Старый протокол: ТВ не ответил на порту 55000")
+                log(L10n.s(R.string.lr_connect_err, e.message))
+                onStatus(L10n.s(R.string.lr_no_55000))
                 onTransport(false)
                 onAuth(false)
                 close()
@@ -102,12 +102,12 @@ class LegacyRemote(
 
     fun sendKey(key: String) {
         if (output == null) {
-            log("!! нет соединения по 55000 — ключ не отправлен")
+            log(L10n.s(R.string.lr_no_conn_55000))
             return
         }
         if (!authOk) {
-            log("!! доступ ещё не разрешён — $key не отправлен (подтвердите на ТВ «Разрешить»)")
-            onStatus("Нет доступа к ТВ — нажмите «Разрешить» на экране ТВ")
+            log(L10n.s(R.string.lr_not_allowed, key))
+            onStatus(L10n.s(R.string.lr_no_access_status))
             return
         }
         try {
@@ -116,7 +116,7 @@ class LegacyRemote(
             write(byteArrayOf(0x00, 0x00, 0x00) + chunkRaw(payload))
             log("▶ $key (55000)")
         } catch (e: Exception) {
-            log("✖ ошибка отправки $key: ${e.message}")
+            log(L10n.s(R.string.lr_send_err, key, e.message))
         }
     }
 
@@ -166,18 +166,18 @@ class LegacyRemote(
                         // тишина между нажатиями или пока пользователь думает — ждём дальше
                     }
                     else -> {
-                        log("✖ ТВ не ответил (таймаут чтения)")
+                        log(L10n.s(R.string.lr_read_timeout))
                         break
                     }
                 }
             }
             if (!stopping) {
-                log("соединение 55000 закрыто")
+                log(L10n.s(R.string.lr_closed))
                 onClosed()
             }
         } catch (e: Exception) {
             if (!stopping) {
-                log("✖ соединение 55000 потеряно: ${e.message}")
+                log(L10n.s(R.string.lr_lost, e.message))
                 onClosed()
             }
         }
@@ -192,30 +192,30 @@ class LegacyRemote(
             granted -> {
                 waitingAuth = false
                 authOk = true
-                log("✔ доступ разрешён — старый протокол подключён")
-                onStatus("Подключено к ТВ (старый протокол) ✔")
+                log(L10n.s(R.string.lr_granted))
+                onStatus(L10n.s(R.string.connected_legacy))
                 onAuth(true)
             }
             denied -> {
                 authOk = false
-                log("✖ ТВ отказал в доступе (64 00 00 00)")
-                onStatus("ТВ отказал в доступе — разрешите пульт в меню ТВ и повторите")
+                log(L10n.s(R.string.lr_denied_64))
+                onStatus(L10n.s(R.string.lr_denied_64_status))
                 onAuth(false)
             }
             resp[0] == 0x0A.toByte() -> {
                 waitingAuth = true
-                log("⏳ ТВ ждёт подтверждения — нажмите «Разрешить» на экране ТВ")
-                onStatus("На ТВ появилось окно — нажмите «Разрешить»")
+                log(L10n.s(R.string.lr_wait_allow))
+                onStatus(L10n.s(R.string.lr_allow_window))
             }
             resp[0] == 0x65.toByte() -> {
                 waitingAuth = false
                 authOk = false
-                log("✖ доступ отклонён на ТВ (65)")
-                onStatus("Доступ отклонён на ТВ")
+                log(L10n.s(R.string.lr_denied_65))
+                onStatus(L10n.s(R.string.lr_denied_65_status))
                 onAuth(false)
             }
-            keyOk -> log("клавиша принята ТВ")
-            else -> log("ответ ТВ: ${resp.joinToString(" ") { String.format("%02X", it) }}")
+            keyOk -> log(L10n.s(R.string.lr_key_ok))
+            else -> log(L10n.s(R.string.lr_resp_fmt, resp.joinToString(" ") { String.format("%02X", it) }))
         }
     }
 

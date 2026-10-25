@@ -67,6 +67,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // v3.1: тема применяется до super.onCreate/setContentView
         prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
+        L10n.init(applicationContext) // v3.5: строки вне активити (SamsungRemote и др.)
         appliedTheme = ThemeEngine.current(prefs)
         ThemeEngine.applyTheme(this, prefs)
         super.onCreate(savedInstanceState)
@@ -88,7 +89,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnMacros).setOnClickListener { showMacrosDialog() }
         findViewById<Button>(R.id.btnTouchpad).setOnClickListener { showTouchpad() }
         findViewById<Button>(R.id.btnLog).setOnClickListener { openLogDialog() }
-        findViewById<TextView>(R.id.versionView).text = "Версия ${currentVersionName()}"
+        findViewById<TextView>(R.id.versionView).text = getString(R.string.version_fmt, currentVersionName())
 
         val btnPowerOn = findViewById<Button>(R.id.btnPowerOn)
         btnPowerOn.setOnClickListener { pressPower() }
@@ -139,7 +140,7 @@ class MainActivity : AppCompatActivity() {
         for (k in TvStore.load(prefs)) {
             if (seen.add(k.ip)) {
                 val mark = if (selectIp == k.ip) "▸ " else ""
-                val old = if (k.legacy) " — старый" else ""
+                val old = if (k.legacy) getString(R.string.m_suffix_old) else ""
                 val nm = k.name.ifBlank { k.model.ifBlank { "Samsung" } }
                 opts.add(Opt("$mark$nm — ${k.ip}$old", k.ip))
             }
@@ -147,7 +148,7 @@ class MainActivity : AppCompatActivity() {
         if (selectIp != null && seen.add(selectIp)) {
             opts.add(0, Opt("▸ $selectIp", selectIp))
         }
-        if (opts.isEmpty()) opts.add(Opt("ТВ не выбран — поиск в ⚙ Настройках", ""))
+        if (opts.isEmpty()) opts.add(Opt(getString(R.string.tv_none_settings), ""))
 
         suppressPicker = true
         val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, opts.map { it.label })
@@ -208,7 +209,7 @@ class MainActivity : AppCompatActivity() {
             applyUnitChrome(u, on = true)
             u.setOnLongClickListener { startUnitDrag(u); true }
         }
-        toast("Расстановка: удерживайте блок и тяните. «✓» — сохранить")
+        toast(getString(R.string.edit_mode_hint))
     }
 
     private fun exitEditMode() {
@@ -224,7 +225,7 @@ class MainActivity : AppCompatActivity() {
             u.isLongClickable = false
         }
         saveLayoutOrder(root)
-        toast("Расположение сохранено")
+        toast(getString(R.string.layout_saved))
     }
 
     /** В режиме расстановки гасим интерактивность содержимого блока — тапы не управляют ТВ */
@@ -366,14 +367,14 @@ class MainActivity : AppCompatActivity() {
     private fun sendOrToast(action: SamsungRemote.() -> Unit) {
         val r = remote
         if (r == null) {
-            toast("Сначала подключитесь к ТВ")
+            toast(getString(R.string.need_tv_first))
             return
         }
         try {
             r.action()
         } catch (e: Exception) {
-            toast("Ошибка: ${e.message}")
-            appendLog("!! исключение при отправке: ${e.message}")
+            toast(getString(R.string.m_error_fmt, e.message))
+            appendLog(getString(R.string.m_send_err_log, e.message))
         }
     }
 
@@ -384,7 +385,7 @@ class MainActivity : AppCompatActivity() {
             tvNowView.text = ""
         } else {
             tvNowView.visibility = View.VISIBLE
-            tvNowView.text = "На ТВ: $s"
+            tvNowView.text = getString(R.string.on_tv_fmt, s)
         }
     }
 
@@ -397,7 +398,7 @@ class MainActivity : AppCompatActivity() {
      * Каждый этап пишется в журнал — по нему можно понять, почему ТВ не нашёлся.
      */
     private fun findTv(manual: Boolean) {
-        statusView.text = if (manual) "Поиск ТВ в сети…" else "Автопоиск ТВ при запуске…"
+        statusView.text = if (manual) getString(R.string.search_tv) else getString(R.string.autosearch_tv)
         Thread {
             var report = TvDiscovery.discoverAll(
                 applicationContext,
@@ -410,7 +411,7 @@ class MainActivity : AppCompatActivity() {
             // Подробности всех этапов — в журнал (для диагностики в чат)
             val reportToLog = report
             runOnUiThread {
-                appendLog("— поиск ТВ ${if (manual) "(вручную)" else "(автозапуск)"} —")
+                appendLog(getString(R.string.m_find_log, if (manual) getString(R.string.m_find_manual) else getString(R.string.m_find_auto)))
                 for (line in reportToLog.log) appendLog(line)
             }
 
@@ -419,14 +420,14 @@ class MainActivity : AppCompatActivity() {
                 val mac = prefs.getString("mac", null)
                 val saved = prefs.getString("host", null)
                 if (!mac.isNullOrBlank() && !saved.isNullOrBlank()) {
-                    runOnUiThread { statusView.text = "ТВ не отвечает — отправляю Wake-on-LAN…" }
+                    runOnUiThread { statusView.text = getString(R.string.wol_sending) }
                     SamsungRemote.wakeOnLan(mac, saved.substringBeforeLast('.') + ".255")
                     Thread.sleep(5000)
                     val r = TvDiscovery.verify(saved, 2000)
                     if (r != null) {
                         report = TvDiscovery.Report(
-                            listOf(r.copy(source = "после Wake-on-LAN")),
-                            listOf("WoL: ТВ проснулся и ответил ($saved)")
+                            listOf(r.copy(source = getString(R.string.m_wol_source))),
+                            listOf(getString(R.string.m_wol_woke, saved))
                         )
                         runOnUiThread { appendLog(report.log.first()) }
                     }
@@ -440,7 +441,7 @@ class MainActivity : AppCompatActivity() {
                 when {
                     report.found.isEmpty() ->
                         statusView.text =
-                            "ТВ не найден. Включите ТВ, проверьте Wi-Fi или добавьте ТВ в ⚙ Настройках"
+                            getString(R.string.not_found_settings)
                     report.found.any { it.ip == saved } ->
                         connectToHost(saved!!)
                     report.found.size == 1 -> {
@@ -450,7 +451,7 @@ class MainActivity : AppCompatActivity() {
                     }
                     else ->
                         statusView.text =
-                            "Найдено ТВ: ${report.found.size} — выберите в ⚙ Настройках"
+                            getString(R.string.m_found_n_settings, report.found.size)
                 }
             }
         }.start()
@@ -469,7 +470,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun connectToHost(host: String) {
         if (connecting) {
-            runOnUiThread { statusView.text = "Подключение уже идет…" }
+            runOnUiThread { statusView.text = getString(R.string.already_connecting) }
             return
         }
         connecting = true
@@ -477,9 +478,9 @@ class MainActivity : AppCompatActivity() {
         Thread {
             try {
                 runOnUiThread {
-                    statusView.text = "Подключение к $host…"
+                    statusView.text = getString(R.string.m_connecting, host)
                     showTvNow(null) // прежний «На ТВ: …» больше не актуален
-                    if (logLines.isNotEmpty()) appendLog("— новый сеанс —")
+                    if (logLines.isNotEmpty()) appendLog(getString(R.string.new_session))
                 }
 
                 // 1. Какие порты вообще открыты на этом ТВ
@@ -494,7 +495,7 @@ class MainActivity : AppCompatActivity() {
                     p8000 = TvDiscovery.portOpen(host, 8000, 1200)
                 }
                 runOnUiThread {
-                    appendLog("порты ТВ: 8002=$p8002 (Tizen TLS), 8001=$p8001 (Tizen), 55000=$p55000 (старый), 8080=$p8080, 8000=$p8000 (Smart View 2.0)")
+                    appendLog(getString(R.string.m_ports_log, p8002, p8001, p55000, p8080, p8000))
                 }
 
                 // 2. Порядок проб: сохранённый протокол — первым, затем остальные
@@ -512,15 +513,15 @@ class MainActivity : AppCompatActivity() {
                     if (tryProto(host, proto)) {
                         prefs.edit().putString("proto:$host", proto).apply()
                         runOnUiThread {
-                            appendLog("✔ рабочий протокол: $proto — запомнен для $host")
+                            appendLog(getString(R.string.m_proto_saved, proto, host))
                         }
                         learnMac(host) // MAC для Wake-on-LAN — на будущее
                         return@Thread
                     }
                 }
                 runOnUiThread {
-                    statusView.text = "Не удалось подключиться — см. журнал"
-                    appendLog("✖ ни один протокол не подключился (8002/8001/55000/8080)")
+                    statusView.text = getString(R.string.connect_fail)
+                    appendLog(getString(R.string.m_no_proto))
                 }
             } finally {
                 connecting = false
@@ -531,8 +532,8 @@ class MainActivity : AppCompatActivity() {
     /** Одна попытка: создаем клиент и ждём подтверждения сеанса (до 8/30/150 с) */
     private fun tryProto(host: String, proto: String): Boolean {
         runOnUiThread {
-            appendLog("— пробую протокол $proto —")
-            statusView.text = "Подключение к $host ($proto)…"
+            appendLog(getString(R.string.m_try_proto, proto))
+            statusView.text = getString(R.string.m_connecting_proto, host, proto)
         }
         val r = SamsungRemote(
             host = host,
@@ -599,11 +600,11 @@ class MainActivity : AppCompatActivity() {
                 hint = "1234"
             }
             AlertDialog.Builder(this)
-                .setTitle(if (retry) "Неверный PIN — попробуйте ещё раз" else "Введите PIN с экрана ТВ")
-                .setMessage("На экране телевизора отображён 4-значный PIN-код. Введите его здесь, чтобы разрешить пульту управление ТВ.")
+                .setTitle(if (retry) getString(R.string.pin_retry) else getString(R.string.pin_title))
+                .setMessage(getString(R.string.pin_message))
                 .setView(input)
                 .setPositiveButton("OK") { _, _ -> submit(input.text.toString().trim()) }
-                .setNegativeButton("Отмена") { _, _ -> submit(null) }
+                .setNegativeButton(android.R.string.cancel) { _, _ -> submit(null) }
                 .setOnCancelListener { submit(null) }
                 .show()
         }
@@ -612,12 +613,12 @@ class MainActivity : AppCompatActivity() {
     private fun sendText() {
         val text = findViewById<EditText>(R.id.textInput).text.toString()
         if (text.isEmpty()) {
-            toast("Введите текст")
+            toast(getString(R.string.enter_text))
             return
         }
         val r = remote
         if (r == null) {
-            toast("Сначала подключитесь к ТВ")
+            toast(getString(R.string.need_tv_first))
             return
         }
         r.sendTextSmart(text)
@@ -638,7 +639,7 @@ class MainActivity : AppCompatActivity() {
     private fun showTouchpad() {
         val r = remote
         if (r == null || !r.isConnected()) {
-            toast("Сначала подключитесь к ТВ")
+            toast(getString(R.string.need_tv_first))
             return
         }
         val mouseSupported = r.supportsMouse()
@@ -664,13 +665,13 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (270 * d).toInt())
         )
 
-        val mouseHint = "Курсор на экране ТВ: ведите пальцем — он повторит движение, тап — клик, удержание — правый клик. Если курсор не двигается — нажмите «Режим: стрелки» (в браузере ТВ стрелки тоже двигают указатель)."
-        val arrowsHint = "Режим стрелок: свайп в сторону = стрелки (в браузере ТВ они двигают указатель), тап = OK."
+        val mouseHint = getString(R.string.mouse_hint)
+        val arrowsHint = getString(R.string.arrows_hint)
         val hint = TextView(this).apply {
             textSize = 12f
             setPadding(0, (8 * d).toInt(), 0, 0)
             text = if (mouseSupported) mouseHint
-            else "Этот ТВ не поддерживает мышь — режим стрелок: свайп в сторону = перемещение, тап = OK."
+            else getString(R.string.no_mouse_hint)
         }
         box.addView(hint)
 
@@ -682,7 +683,7 @@ class MainActivity : AppCompatActivity() {
         val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
             setMargins((2 * d).toInt(), (2 * d).toInt(), (2 * d).toInt(), (2 * d).toInt())
         }
-        row.addView(keyBtn("◀ Назад", "KEY_RETURN"), lp)
+        row.addView(keyBtn(getString(R.string.back_key), "KEY_RETURN"), lp)
         row.addView(keyBtn("HOME", "KEY_HOME"), lp)
         row.addView(keyBtn("OK", "KEY_ENTER"), lp)
         box.addView(row)
@@ -691,22 +692,22 @@ class MainActivity : AppCompatActivity() {
         if (mouseSupported) {
             box.addView(Button(this).apply {
                 textSize = 12f
-                text = "Режим: мышь"
+                text = getString(R.string.mode_mouse)
                 setOnClickListener {
                     padMouse = !padMouse
                     pad.setMode(padMouse)
-                    text = if (padMouse) "Режим: мышь" else "Режим: стрелки"
+                    text = if (padMouse) getString(R.string.mode_mouse) else getString(R.string.mode_arrows)
                     hint.text = if (padMouse) mouseHint else arrowsHint
-                    appendLog("— тачпад: ${if (padMouse) "режим мыши (Move-дельты)" else "режим стрелок"} —")
+                    appendLog(getString(R.string.m_pad_mode_log, if (padMouse) getString(R.string.m_pad_mouse) else getString(R.string.m_pad_arrows)))
                 }
             })
         }
 
-        appendLog("— тачпад: ${if (padMouse) "режим мыши (Move-дельты, тап = LeftClick)" else "режим стрелок (мышь протоколом не поддержана)"} —")
+        appendLog(getString(R.string.m_pad_mode_log, if (padMouse) getString(R.string.m_pad_mouse2) else getString(R.string.m_pad_arrows2)))
         AlertDialog.Builder(this)
-            .setTitle(if (mouseSupported) "Тачпад — мышь на ТВ" else "Тачпад — стрелки")
+            .setTitle(if (mouseSupported) getString(R.string.tp_mouse_title) else getString(R.string.tp_arrows_title))
             .setView(box)
-            .setNegativeButton("Закрыть", null)
+            .setNegativeButton(getString(R.string.gen_close), null)
             .show()
     }
 
@@ -730,27 +731,27 @@ class MainActivity : AppCompatActivity() {
         }
         if (merged.isEmpty()) {
             AlertDialog.Builder(this)
-                .setTitle("Список приложений")
-                .setMessage("ТВ не выдал список приложений.\nПодробности по каждой стратегии — в «Журнале связи с ТВ».")
-                .setPositiveButton("Журнал") { _, _ -> openLogDialog() }
-                .setNegativeButton("Закрыть", null)
+                .setTitle(getString(R.string.app_list_title))
+                .setMessage(getString(R.string.m_app_list_empty))
+                .setPositiveButton(getString(R.string.log_btn)) { _, _ -> openLogDialog() }
+                .setNegativeButton(getString(R.string.gen_close), null)
                 .show()
             return
         }
         val names = merged.map { "${it.name}\n(${it.appId})" }.toTypedArray()
         val title = when {
-            catalog && manual.isNotEmpty() -> "Каталог + ваши приложения (${merged.size}) — запуск проверит установку"
-            catalog -> "Каталог приложений (${merged.size}) — запуск проверит установку"
-            manual.isNotEmpty() -> "Приложения на ТВ + ваши (${merged.size})"
-            else -> "Приложения на ТВ (${merged.size})"
+            catalog && manual.isNotEmpty() -> getString(R.string.m_title_catalog_plus, merged.size)
+            catalog -> getString(R.string.m_title_catalog, merged.size)
+            manual.isNotEmpty() -> getString(R.string.m_title_apps_plus, merged.size)
+            else -> getString(R.string.m_title_apps, merged.size)
         }
         AlertDialog.Builder(this)
             .setTitle(title)
             .setItems(names) { _, i ->
                 sendOrToast { launchApp(merged[i].appId, merged[i].name) }
             }
-            .setNeutralButton("Своё приложение…") { _, _ -> showManualAppDialog() }
-            .setNegativeButton("Закрыть", null)
+            .setNeutralButton(getString(R.string.own_app)) { _, _ -> showManualAppDialog() }
+            .setNegativeButton(getString(R.string.gen_close), null)
             .show()
     }
 
@@ -795,13 +796,13 @@ class MainActivity : AppCompatActivity() {
     private fun showManualAppDialog() {
         val saved = savedManualApps()
         val input = EditText(this)
-        input.hint = "ID или DIAL-имя, например 1112990019 или YouTube"
+        input.hint = getString(R.string.id_dial_hint)
         input.inputType = InputType.TYPE_CLASS_TEXT
         val nameInput = EditText(this)
-        nameInput.hint = "Название для списка (необязательно)"
+        nameInput.hint = getString(R.string.list_name_hint)
         nameInput.inputType = InputType.TYPE_CLASS_TEXT
         val remember = CheckBox(this)
-        remember.text = "Запомнить в списке приложений"
+        remember.text = getString(R.string.remember_app)
         remember.isChecked = true
         val pad = (16 * resources.displayMetrics.density).toInt()
         val box = LinearLayout(this).apply {
@@ -812,24 +813,24 @@ class MainActivity : AppCompatActivity() {
             addView(remember)
         }
         val dlg = AlertDialog.Builder(this)
-            .setTitle("Запуск по ID/имени приложения")
+            .setTitle(getString(R.string.manual_launch_title))
             .setView(box)
-            .setPositiveButton("Запустить") { _, _ ->
+            .setPositiveButton(getString(R.string.gen_run)) { _, _ ->
                 val v = input.text.toString().trim()
                 if (v.isNotEmpty()) {
                     val nm = nameInput.text.toString().trim()
                     sendOrToast { launchApp(v, nm.ifEmpty { null }) }
                     if (remember.isChecked) {
                         rememberManualApp(v, nm.ifEmpty { v })
-                        toast("Добавлено в список приложений этого ТВ")
+                        toast(getString(R.string.app_added))
                     }
                 }
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(android.R.string.cancel, null)
         if (saved.isNotEmpty()) {
-            dlg.setNeutralButton("Забыть свои (${saved.size})") { _, _ ->
+            dlg.setNeutralButton(getString(R.string.m_forget_own, saved.size)) { _, _ ->
                 prefs.edit().remove("myapps:${currentTvHost()}").apply()
-                toast("Свои приложения забыты — список ТВ без них")
+                toast(getString(R.string.own_apps_forgot))
             }
         }
         dlg.show()
@@ -844,7 +845,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun showUrlDialog() {
         val urlInput = EditText(this).apply {
-            hint = "https://www.youtube.com/watch?v=… или любая ссылка"
+            hint = getString(R.string.url_hint)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
             maxLines = 1
         }
@@ -862,23 +863,21 @@ class MainActivity : AppCompatActivity() {
             addView(TextView(this@MainActivity).apply {
                 textSize = 12f
                 setPadding(0, (8 * pad / 16), 0, 0)
-                text = "«В браузере ТВ» — откроет ссылку в интернете на ТВ (Tizen 2016+).\n" +
-                    "«В YouTube» — эксперимент: ссылка уходит прямо в ТВ-приложение YouTube; " +
-                    "если прошивка его не поддержит — пульт сам откроет ссылку в браузере ТВ."
+                text = getString(R.string.m_url_help)
             })
         }
         AlertDialog.Builder(this)
-            .setTitle("Ссылка на экран ТВ")
+            .setTitle(getString(R.string.url_title))
             .setView(box)
-            .setPositiveButton("В браузере ТВ") { _, _ ->
+            .setPositiveButton(getString(R.string.url_browser_btn)) { _, _ ->
                 val u = urlInput.text.toString().trim()
-                if (u.isEmpty()) toast("Введите ссылку") else sendOrToast { launchBrowserUrl(u) }
+                if (u.isEmpty()) toast(getString(R.string.enter_url)) else sendOrToast { launchBrowserUrl(u) }
             }
-            .setNeutralButton("В YouTube (эксперим.)") { _, _ ->
+            .setNeutralButton(getString(R.string.url_youtube_btn)) { _, _ ->
                 val u = urlInput.text.toString().trim()
-                if (u.isEmpty()) toast("Введите ссылку") else sendOrToast { launchYouTubeVideo(u) }
+                if (u.isEmpty()) toast(getString(R.string.enter_url)) else sendOrToast { launchYouTubeVideo(u) }
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
@@ -957,7 +956,7 @@ class MainActivity : AppCompatActivity() {
         list.add(updated)
         saveMacros(list)
         renderMacrosRow()
-        toast("Макрос «${updated.name}» сохранён")
+        toast(getString(R.string.m_macro_saved, updated.name))
     }
 
     /** Ряд кнопок макросов на главном экране: тап — выполнить, удержание — редактор */
@@ -989,28 +988,28 @@ class MainActivity : AppCompatActivity() {
     private fun runMacro(m: Macro) {
         val r = remote
         if (r == null || !r.isConnected()) {
-            toast("Сначала подключитесь к ТВ")
+            toast(getString(R.string.need_tv_first))
             return
         }
-        toast("Макрос: ${m.name}")
+        toast(getString(R.string.m_macro_named, m.name))
         Thread {
-            appendLogUi("— макрос «${m.name}» —")
+            appendLogUi(getString(R.string.m_macro_run_log, m.name))
             m.steps.forEachIndexed { i, s ->
                 appendLogUi(
-                    "макрос «${m.name}»: шаг ${i + 1}/${m.steps.size} — " +
-                        if (s.type == "app") "запуск ${s.name} (${s.id})" else s.key
+                    getString(R.string.m_macro_step_fmt, m.name, i + 1, m.steps.size,
+                        if (s.type == "app") getString(R.string.m_step_run_fmt, s.name, s.id) else s.key)
                 )
                 try {
                     if (s.type == "app") r.launchApp(s.id, s.name) else r.sendKey(s.key)
                 } catch (e: Exception) {
-                    appendLogUi("!! макрос: ${e.message}")
+                    appendLogUi(getString(R.string.m_macro_err, e.message))
                 }
                 try {
                     Thread.sleep(900)
                 } catch (_: InterruptedException) {
                 }
             }
-            appendLogUi("✔ макрос «${m.name}» выполнен")
+            appendLogUi(getString(R.string.m_macro_done, m.name))
         }.start()
     }
 
@@ -1023,15 +1022,15 @@ class MainActivity : AppCompatActivity() {
     private fun showMacrosDialog() {
         val ms = loadMacros()
         val items = if (ms.isEmpty())
-            arrayOf("(макросов нет — создайте первый)")
+            arrayOf(getString(R.string.no_macros))
         else
-            ms.map { "${it.name}  — ${it.steps.size} шаг(ов)" }.toTypedArray()
+            ms.map { getString(R.string.m_macro_list_item, it.name, it.steps.size) }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Мои кнопки (макросы)")
-            .setMessage("Тап — выполнить. Редактирование/удаление — удержание кнопки макроса на главном экране.")
+            .setTitle(getString(R.string.macros_title))
+            .setMessage(getString(R.string.macros_hint))
             .setItems(items) { _, i -> if (ms.isNotEmpty()) runMacro(ms[i]) }
-            .setPositiveButton("Создать макрос…") { _, _ -> showMacroEditor(null) }
-            .setNegativeButton("Закрыть", null)
+            .setPositiveButton(getString(R.string.create_macro)) { _, _ -> showMacroEditor(null) }
+            .setNegativeButton(getString(R.string.gen_close), null)
             .show()
     }
 
@@ -1040,7 +1039,7 @@ class MainActivity : AppCompatActivity() {
         val d = resources.displayMetrics.density
         val steps = existing?.steps?.toMutableList() ?: mutableListOf()
         val nameInput = EditText(this).apply {
-            hint = "Название кнопки, напр. «Вечерний Netflix»"
+            hint = getString(R.string.macro_name_hint)
             setText(existing?.name ?: "")
         }
         val stepsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -1050,7 +1049,7 @@ class MainActivity : AppCompatActivity() {
             if (steps.isEmpty()) {
                 stepsBox.addView(TextView(this@MainActivity).apply {
                     textSize = 12f
-                    text = "Шагов пока нет — добавьте приложение и/или клавиши"
+                    text = getString(R.string.no_steps)
                 })
             }
             steps.forEachIndexed { i, s ->
@@ -1058,7 +1057,7 @@ class MainActivity : AppCompatActivity() {
                     textSize = 13f
                     setPadding(0, (2 * d).toInt(), 0, (2 * d).toInt())
                     text = "${i + 1}. " + if (s.type == "app")
-                        "запуск: ${s.name} (${s.id})" else "клавиша: ${s.key}"
+                        getString(R.string.m_step_run_fmt2, s.name, s.id) else getString(R.string.m_step_key_fmt, s.key)
                     setOnLongClickListener {
                         steps.removeAt(i)
                         redraw()
@@ -1069,8 +1068,8 @@ class MainActivity : AppCompatActivity() {
         }
         redraw()
 
-        val btnKey = Button(this).apply { text = "+ клавиша" }
-        val btnApp = Button(this).apply { text = "+ приложение" }
+        val btnKey = Button(this).apply { text = getString(R.string.add_key_btn) }
+        val btnApp = Button(this).apply { text = getString(R.string.add_app_btn) }
         val btnRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(btnKey, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -1084,70 +1083,70 @@ class MainActivity : AppCompatActivity() {
             addView(btnRow)
             addView(TextView(this@MainActivity).apply {
                 textSize = 11f
-                text = "Удалить шаг — долгое нажатие на него"
+                text = getString(R.string.del_step_hint)
             })
         }
 
         btnKey.setOnClickListener {
             AlertDialog.Builder(this)
-                .setTitle("Клавиша для макроса")
+                .setTitle(getString(R.string.key_for_macro))
                 .setItems(MACRO_KEYS) { _, k ->
                     steps.add(MacroStep("key", "", "", MACRO_KEYS[k]))
                     redraw()
                 }
-                .setNegativeButton("Отмена", null)
+                .setNegativeButton(android.R.string.cancel, null)
                 .show()
         }
         btnApp.setOnClickListener {
             val saved = savedManualApps()
             val names = saved.map { "${it.name} (${it.appId})" }.toMutableList()
-            names.add("Ввести ID вручную…")
+            names.add(getString(R.string.manual_id))
             AlertDialog.Builder(this)
-                .setTitle("Приложение для макроса")
+                .setTitle(getString(R.string.app_for_macro))
                 .setItems(names.toTypedArray()) { _, i ->
                     if (i < saved.size) {
                         steps.add(MacroStep("app", saved[i].appId, saved[i].name, ""))
                         redraw()
                     } else {
                         val inp = EditText(this).apply {
-                            hint = "ID или DIAL-имя, напр. 1112990019 или YouTube"
+                            hint = getString(R.string.id_dial_hint_short)
                             inputType = InputType.TYPE_CLASS_TEXT
                         }
                         AlertDialog.Builder(this)
-                            .setTitle("ID или имя приложения")
+                            .setTitle(getString(R.string.id_or_name_title))
                             .setView(inp)
-                            .setPositiveButton("Добавить") { _, _ ->
+                            .setPositiveButton(getString(R.string.gen_add)) { _, _ ->
                                 val v = inp.text.toString().trim()
                                 if (v.isNotEmpty()) {
                                     steps.add(MacroStep("app", v, v, ""))
                                     redraw()
                                 }
                             }
-                            .setNegativeButton("Отмена", null)
+                            .setNegativeButton(android.R.string.cancel, null)
                             .show()
                     }
                 }
-                .setNegativeButton("Отмена", null)
+                .setNegativeButton(android.R.string.cancel, null)
                 .show()
         }
 
         val builder = AlertDialog.Builder(this)
-            .setTitle(if (existing == null) "Новый макрос" else "Макрос: ${existing.name}")
+            .setTitle(if (existing == null) getString(R.string.new_macro) else getString(R.string.m_macro_named, existing.name))
             .setView(box)
-            .setPositiveButton("Сохранить") { _, _ ->
-                val nm = nameInput.text.toString().trim().ifEmpty { "Макрос" }
+            .setPositiveButton(getString(R.string.gen_save)) { _, _ ->
+                val nm = nameInput.text.toString().trim().ifEmpty { getString(R.string.macro_default_name) }
                 if (steps.isEmpty()) {
-                    toast("Макрос без шагов не сохранён")
+                    toast(getString(R.string.macro_no_steps))
                     return@setPositiveButton
                 }
                 saveMacro(existing, Macro(nm, steps.toList()))
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(android.R.string.cancel, null)
         if (existing != null) {
-            builder.setNeutralButton("Удалить") { _, _ ->
+            builder.setNeutralButton(getString(R.string.gen_delete)) { _, _ ->
                 saveMacros(loadMacros().filter { it.name != existing.name })
                 renderMacrosRow()
-                toast("Макрос удалён")
+                toast(getString(R.string.macro_deleted))
             }
         }
         builder.show()
@@ -1162,7 +1161,7 @@ class MainActivity : AppCompatActivity() {
     private fun pressPower() {
         val host = prefs.getString("host", null)
         if (host.isNullOrBlank()) {
-            toast("Сначала выберите или найдите ТВ в ⚙ Настройках")
+            toast(getString(R.string.need_tv_settings))
             return
         }
         val r = remote
@@ -1175,18 +1174,18 @@ class MainActivity : AppCompatActivity() {
 
     /** Включение ТВ: Wake-on-LAN (MAC — из API/ARP-кэша/вручную) + автоподключение */
     private fun wakeTv(host: String) {
-        statusView.text = "ТВ не отвечает — включаю по сети…"
+        statusView.text = getString(R.string.wake_start)
         Thread {
             var mac = prefs.getString("mac", null)
             if (mac.isNullOrBlank()) mac = learnMac(host)
             if (mac.isNullOrBlank()) {
                 runOnUiThread {
-                    statusView.text = "MAC-адрес ТВ неизвестен"
-                    toast("MAC неизвестен. Подключитесь к ТВ — MAC сохранится автоматически (или удерживайте POWER для ввода MAC)")
+                    statusView.text = getString(R.string.mac_unknown)
+                    toast(getString(R.string.mac_unknown_hint))
                 }
                 return@Thread
             }
-            runOnUiThread { statusView.text = "Включаю ТВ (Wake-on-LAN → $mac)…" }
+            runOnUiThread { statusView.text = getString(R.string.m_wol_enabling, mac) }
             SamsungRemote.wakeOnLan(mac, host.substringBeforeLast('.') + ".255")
             var awake = false
             for (i in 1..10) {
@@ -1198,13 +1197,13 @@ class MainActivity : AppCompatActivity() {
             }
             runOnUiThread {
                 if (awake) {
-                    statusView.text = "ТВ проснулся — подключаюсь…"
-                    appendLog("✔ ТВ ответил после Wake-on-LAN")
+                    statusView.text = getString(R.string.m_waking)
+                    appendLog(getString(R.string.wol_answered))
                     connectToHost(host)
                 } else {
-                    statusView.text = "ТВ не проснулся"
-                    appendLog("✖ WoL отправлен ($mac), но ТВ не отвечает 15 с. На ТВ включите: Настройки → Общие → Сеть → Пробуждение по сети")
-                    toast("ТВ не проснулся — включите на ТВ «Пробуждение по сети» (Wake-on-Network)")
+                    statusView.text = getString(R.string.wake_fail)
+                    appendLog(getString(R.string.m_wol_no_reply, mac))
+                    toast(getString(R.string.wake_fail_hint))
                 }
             }
         }.start()
@@ -1237,7 +1236,7 @@ class MainActivity : AppCompatActivity() {
                     parts[3].contains(":") && parts[3] != "00:00:00:00:00:00"
                 ) {
                     prefs.edit().putString("mac", parts[3]).apply()
-                    runOnUiThread { appendLog("MAC ТВ из ARP-кэша: ${parts[3]}") }
+                    runOnUiThread { appendLog(getString(R.string.m_mac_arp, parts[3])) }
                     return parts[3]
                 }
             }
@@ -1251,22 +1250,22 @@ class MainActivity : AppCompatActivity() {
         input.hint = "C0:23:8D:49:B3:BC"
         input.setText(prefs.getString("mac", ""))
         AlertDialog.Builder(this)
-            .setTitle("MAC-адрес телевизора")
-            .setMessage("Смотрите на ТВ: Настройки → Общие → Сеть → Состояние сети")
+            .setTitle(getString(R.string.mac_title))
+            .setMessage(getString(R.string.mac_message))
             .setView(input)
-            .setPositiveButton("Сохранить") { _, _ ->
+            .setPositiveButton(getString(R.string.gen_save)) { _, _ ->
                 prefs.edit().putString("mac", input.text.toString().trim()).apply()
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(android.R.string.cancel, null)
             .show()
     }
 
     /** Копирует журнал в буфер обмена — чтобы вставить его в чат для диагностики */
     private fun copyLog() {
-        val text = logLines.joinToString("\n").ifBlank { "Лог пуст" }
+        val text = logLines.joinToString("\n").ifBlank { getString(R.string.log_empty) }
         val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("tizenpult-log", text))
-        toast("Лог скопирован — вставьте его в чат")
+        toast(getString(R.string.log_copied))
     }
 
     /** Диалог журнала: читаемый лог без прыжков + отправка произвольной KEY_* клавиши для тестов */
@@ -1279,11 +1278,11 @@ class MainActivity : AppCompatActivity() {
 
         // Тестовая отправка любой клавиши: вводишь VOLDOWN — уходит KEY_VOLDOWN
         val keyInput = EditText(this).apply {
-            hint = "Тест клавиши: VOLDOWN, HOME, HDMI..."
+            hint = getString(R.string.key_test_hint)
             inputType = InputType.TYPE_CLASS_TEXT
             maxLines = 1
         }
-        val sendBtn = Button(this).apply { text = "Отправить" }
+        val sendBtn = Button(this).apply { text = getString(R.string.gen_send) }
         val keyRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(keyInput, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
@@ -1298,7 +1297,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFF9FE89F.toInt())
             setBackgroundColor(0xFF111111.toInt())
             setPadding((8 * d).toInt(), (8 * d).toInt(), (8 * d).toInt(), (8 * d).toInt())
-            text = logLines.joinToString("\n").ifBlank { "(пусто — подключитесь к ТВ)" }
+            text = logLines.joinToString("\n").ifBlank { getString(R.string.log_blank) }
         }
         scroll.addView(tv)
         container.addView(
@@ -1320,11 +1319,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         AlertDialog.Builder(this)
-            .setTitle("Журнал связи с ТВ")
+            .setTitle(getString(R.string.log_dialog_title))
             .setView(container)
-            .setPositiveButton("Копировать") { _, _ -> copyLog() }
-            .setNeutralButton("Очистить") { _, _ -> logLines.clear(); refreshLogText() }
-            .setNegativeButton("Закрыть", null)
+            .setPositiveButton(getString(R.string.gen_copy)) { _, _ -> copyLog() }
+            .setNeutralButton(getString(R.string.gen_clear)) { _, _ -> logLines.clear(); refreshLogText() }
+            .setNegativeButton(getString(R.string.gen_close), null)
             .setOnDismissListener {
                 logDialogText = null
                 logDialogScroll = null
@@ -1336,13 +1335,13 @@ class MainActivity : AppCompatActivity() {
     private fun sendCustomKey(raw: String) {
         val norm = raw.uppercase(Locale.ROOT).replace(' ', '_')
         val key = if (norm.startsWith("KEY_")) norm else "KEY_$norm"
-        appendLog("тест клавиши: $key")
+        appendLog(getString(R.string.m_key_test_log, key))
         sendOrToast { sendKey(key) }
     }
 
     private fun refreshLogText() {
         val tv = logDialogText ?: return
-        tv.text = logLines.joinToString("\n").ifBlank { "(пусто)" }
+        tv.text = logLines.joinToString("\n").ifBlank { getString(R.string.log_blank2) }
         val sc = logDialogScroll ?: return
         sc.post { sc.fullScroll(View.FOCUS_DOWN) }
     }

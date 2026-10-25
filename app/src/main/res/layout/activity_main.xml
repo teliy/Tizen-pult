@@ -48,7 +48,7 @@
             android:layout_height="wrap_content"
             android:paddingTop="4dp"
             android:paddingBottom="2dp"
-            android:text="Не подключено"
+            android:text="@string/lay_not_connected"
             android:textStyle="italic" />
 
         <!-- v3.0: что сейчас на ТВ (канал из событий ms.channel.* / последний запуск).
@@ -61,7 +61,7 @@
             android:textSize="13sp"
             android:textStyle="bold"
             android:visibility="gone"
-            android:text="На ТВ:" />
+            android:text="@string/lay_on_tv_label" />
 
         <!-- v3.3: подсказка режима расстановки (видна только в нём) -->
         <TextView
@@ -70,7 +70,7 @@
             android:layout_height="wrap_content"
             android:paddingTop="2dp"
             android:paddingBottom="2dp"
-            android:text="Расстановка: удерживайте блок и тяните вверх/вниз. Кнопка «✓» — сохранить."
+            android:text="@string/lay_edit_hint"
             android:textSize="12sp"
             android:textStyle="italic"
             android:visibility="gone" />
@@ -89,13 +89,13 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Приложения на ТВ (список)" />
+                android:text="@string/lay_apps_section" />
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:paddingTop="4dp"
-                android:text="Тап по приложению — запуск на ТВ. Список получаем от ТВ; если прошивка его не отдаёт — показываем найденные популярные приложения."
+                android:text="@string/lay_apps_desc"
                 android:textSize="12sp" />
         </LinearLayout>
 
@@ -112,7 +112,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Открыть ссылку на ТВ (браузер / YouTube)" />
+                android:text="@string/lay_link_section" />
         </LinearLayout>
 
         <!-- unit:macros — макросы -->
@@ -128,7 +128,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Мои кнопки (макросы)" />
+                android:text="@string/macros_title" />
 
             <HorizontalScrollView
                 android:layout_width="match_parent"
@@ -161,7 +161,7 @@
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:hint="Текст для ТВ"
+                    android:hint="@string/lay_text_hint"
                     android:inputType="text"
                     android:maxLines="1" />
 
@@ -169,13 +169,13 @@
                     android:id="@+id/btnSendText"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Отправить" />
+                    android:text="@string/gen_send" />
             </LinearLayout>
 
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Сначала откройте на ТВ поле ввода (например, поиск), затем отправьте текст."
+                android:text="@string/lay_text_desc"
                 android:textSize="12sp" />
         </LinearLayout>
 
@@ -192,7 +192,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="POWER — вкл/выкл ТВ (удерживать — MAC)" />
+                android:text="@string/lay_power_hint" />
         </LinearLayout>
 
         <!-- unit:volch — громкость и каналы -->
@@ -260,7 +260,7 @@
                 android:layout_margin="2dp"
                 android:onClick="onKeyClick"
                 android:tag="KEY_MUTE"
-                android:text="MUTE (звук вкл/выкл)" />
+                android:text="@string/lay_mute" />
         </LinearLayout>
 
         <!-- unit:media — медиа-кнопки: плеер и перемотка.
@@ -356,9 +356,9 @@
                 </TableRow>
 
                 <TableRow android:weightSum="3">
-                    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_PRECH" android:text="Пред. кан." />
+                    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_PRECH" android:text="@string/lay_prev_ch" />
                     <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_0" android:text="0" />
-                    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_CHLIST" android:text="Список кан." />
+                    <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_CHLIST" android:text="@string/lay_ch_list" />
                 </TableRow>
 
                 <TableRow android:weightSum="2">
@@ -461,7 +461,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
-                android:text="Тачпад / мышь на ТВ" />
+                android:text="@string/lay_touchpad" />
         </LinearLayout>
 
         <!-- unit:home — основные кнопки -->
@@ -492,7 +492,7 @@
                         android:layout_margin="2dp"
                         android:onClick="onKeyClick"
                         android:tag="KEY_RETURN"
-                        android:text="Назад" />
+                        android:text="@string/lay_back" />
                     <Button
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -581,7 +581,7 @@
                         android:layout_margin="2dp"
                         android:onClick="onKeyClick"
                         android:tag="KEY_SUBTITLE"
-                        android:text="СУБТИТРЫ" />
+                        android:text="@string/lay_subtitles" />
                 </TableRow>
 
                 <TableRow android:weightSum="3">
@@ -592,7 +592,7 @@
                         android:layout_margin="2dp"
                         android:onClick="onKeyClick"
                         android:tag="KEY_ASPECT"
-                        android:text="МАСШТАБ" />
+                        android:text="@string/lay_aspect" />
                     <Button
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -600,7 +600,7 @@
                         android:layout_margin="2dp"
                         android:onClick="onKeyClick"
                         android:tag="KEY_PMODE"
-                        android:text="Картинка" />
+                        android:text="@string/lay_picture" />
                     <Button
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
@@ -608,7 +608,7 @@
                         android:layout_margin="2dp"
                         android:onClick="onKeyClick"
                         android:tag="KEY_SMODE"
-                        android:text="Звук" />
+                        android:text="@string/lay_sound" />
                 </TableRow>
             </TableLayout>
         </LinearLayout>
@@ -625,7 +625,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Журнал связи с ТВ (лог)" />
+                android:text="@string/lay_log_section" />
         </LinearLayout>
 
         <!-- ============ ПОДВАЛ (фиксированный) ============ -->
@@ -634,7 +634,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="8dp"
-            android:text="Первое подключение: ТВ покажет запрос — нажмите «Разрешить» на экране ТВ. Старые ТВ (2011–2015) подключаются через порт 55000 — на ТВ может появиться окно подтверждения."
+            android:text="@string/lay_first_pairing"
             android:textSize="12sp" />
 
         <TextView
@@ -643,7 +643,7 @@
             android:layout_height="wrap_content"
             android:gravity="center"
             android:paddingTop="2dp"
-            android:text="Версия 3.3"
+            android:text="—"
             android:textSize="12sp" />
 
     </LinearLayout>
