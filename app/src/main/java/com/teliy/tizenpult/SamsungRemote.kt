@@ -168,16 +168,46 @@ class SamsungRemote(
         })
     }
 
-    /** Ввод текста в активное поле на ТВ (поле должно быть в фокусе) */
+    /**
+     * Ввод текста в поле на ТВ (поле должно быть в фокусе, открыта экранная клавиатура).
+     *
+     * ТВ 2021+ (Tizen 5.5/6, напр. AU9000) приняли НОВЫЙ формат SendInputString:
+     *   Cmd = base64-текст, DataOfCmd = "base64", TypeOfRemote = "SendInputString"
+     * и требуют предварительный broadcast "custom.remote.textReceived"
+     * (см. send_text() в samsung-tv-ws-api — эталонной библиотеке Home Assistant).
+     *
+     * Старый формат (Cmd="SendInput", TypeOfRemote="SendInput") оставлен вторым
+     * кадром как fallback для ТВ 2016–2019: на новых он игнорируется безвредно.
+     */
     fun sendText(text: String) {
+        if (text.isEmpty()) return
+        val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+        // 1) Broadcast «текст принят к обработке» — обязательный на ТВ 2021+
+        send(JSONObject().apply {
+            put("method", "ms.channel.emit")
+            put("params", JSONObject().apply {
+                put("event", "custom.remote.textReceived")
+                put("to", "broadcast")
+            })
+        })
+
+        // 2) Новый формат SendInputString (ТВ 2021+)
+        send(JSONObject().apply {
+            put("method", "ms.remote.control")
+            put("params", JSONObject().apply {
+                put("Cmd", b64)
+                put("DataOfCmd", "base64")
+                put("TypeOfRemote", "SendInputString")
+            })
+        })
+
+        // 3) Legacy-формат (ТВ 2016–2019)
         send(JSONObject().apply {
             put("method", "ms.remote.control")
             put("params", JSONObject().apply {
                 put("Cmd", "SendInput")
-                put(
-                    "DataOfCmd",
-                    Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-                )
+                put("DataOfCmd", b64)
                 put("TypeOfRemote", "SendInput")
             })
         })

@@ -52,7 +52,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:hint="Текст на ТВ (фокус в поле ввода)"
+                android:hint="Текст в поле ввода ТВ (сначала кликни поле на ТВ)"
                 android:inputType="text"
                 android:maxLines="1" />
 
