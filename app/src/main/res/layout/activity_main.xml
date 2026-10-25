@@ -37,9 +37,30 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="4dp"
-            android:paddingBottom="8dp"
+            android:paddingBottom="4dp"
             android:text="Не подключено"
             android:textStyle="italic" />
+
+        <Button
+            android:id="@+id/btnFind"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Найти ТВ в сети (если IP неизвестен)" />
+
+        <!-- Приложения -->
+        <Button
+            android:id="@+id/btnApps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Приложения на ТВ (список)" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="4dp"
+            android:text="Тап по приложению — запуск на ТВ. Список получаем от ТВ; если прошивка его не отдаёт — показываем найденные популярные приложения."
+            android:textSize="12sp" />
 
         <!-- Текст на ТВ -->
         <LinearLayout
@@ -52,7 +73,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:hint="Текст в поле ввода ТВ (сначала кликни поле на ТВ)"
+                android:hint="Текст на ТВ: сначала откройте поиск/поле ввода на ТВ"
                 android:inputType="text"
                 android:maxLines="1" />
 
@@ -251,39 +272,6 @@
                     android:text="HDMI 3" />
             </TableRow>
         </TableLayout>
-
-        <!-- Приложения -->
-        <TableLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp">
-
-            <TableRow android:weightSum="2">
-                <Button
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_margin="2dp"
-                    android:onClick="onAppClick"
-                    android:tag="111299001912"
-                    android:text="YouTube" />
-                <Button
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_margin="2dp"
-                    android:onClick="onAppClick"
-                    android:tag="11101200001"
-                    android:text="Netflix" />
-            </TableRow>
-        </TableLayout>
-
-        <Button
-            android:id="@+id/btnApps"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="Список приложений с ТВ" />
 
         <TextView
             android:layout_width="match_parent"

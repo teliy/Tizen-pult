@@ -46,7 +46,8 @@ class MainActivity : AppCompatActivity() {
 
         ipInput.setText(prefs.getString("host", ""))
 
-        findViewById<Button>(R.id.btnConnect).setOnClickListener { connect() }
+        findViewById<Button>(R.id.btnConnect).setOnClickListener { connectManual() }
+        findViewById<Button>(R.id.btnFind).setOnClickListener { findTv(manual = true) }
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
         findViewById<Button>(R.id.btnLog).setOnClickListener { openLogDialog() }
@@ -58,18 +59,15 @@ class MainActivity : AppCompatActivity() {
             askMac()
             true
         }
+
+        // Автопоиск ТВ и подключение при запуске приложения
+        findTv(manual = false)
     }
 
     /** Кнопки с андроид:tag="KEY_..." в разметке обрабатываются здесь */
     fun onKeyClick(v: View) {
         val key = v.tag as? String ?: return
         sendOrToast { sendKey(key) }
-    }
-
-    /** Кнопки запуска приложений с tag = appId */
-    fun onAppClick(v: View) {
-        val appId = v.tag as? String ?: return
-        sendOrToast { launchApp(appId) }
     }
 
     private fun sendOrToast(action: SamsungRemote.() -> Unit) {
@@ -86,15 +84,53 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun connect() {
+    private fun connectManual() {
         val host = ipInput.text.toString().trim()
         if (host.isEmpty()) {
-            toast("Введите IP телевизора")
+            toast("Введите IP или нажмите «Найти ТВ»")
             return
         }
         prefs.edit().putString("host", host).apply()
+        connectToHost(host)
+    }
 
-        statusView.text = "Подключение к $host..."
+    /**
+     * Автопоиск ТВ: сохранённый IP → SSDP → скан подсети.
+     * Если ничего не найдено и известен MAC — пробуждение по сети и повторная проверка.
+     * Вызывается при старте приложения и по кнопке «Найти ТВ».
+     */
+    private fun findTv(manual: Boolean) {
+        statusView.text = if (manual) "Поиск ТВ в сети…" else "Автопоиск ТВ при запуске…"
+        Thread {
+            var res = TvDiscovery.discover(prefs.getString("host", null)) { p ->
+                runOnUiThread { statusView.text = "🔎 $p" }
+            }
+            // Ничего не нашли — возможно, ТВ спит. Пробуждаем и проверяем ещё раз
+            if (res == null) {
+                val mac = prefs.getString("mac", null)
+                if (!mac.isNullOrBlank()) {
+                    runOnUiThread { statusView.text = "ТВ не отвечает — отправляю Wake-on-LAN…" }
+                    SamsungRemote.wakeOnLan(mac)
+                    Thread.sleep(5000)
+                    val saved = prefs.getString("host", null)
+                    if (!saved.isNullOrBlank()) res = TvDiscovery.verify(saved, 2000)
+                }
+            }
+            if (res == null) {
+                runOnUiThread {
+                    statusView.text = "ТВ не найден. Включите ТВ, проверьте Wi-Fi или введите IP вручную"
+                }
+                return@Thread
+            }
+            runOnUiThread { ipInput.setText(res.ip) }
+            prefs.edit().putString("host", res.ip).apply()
+            connectToHost(res.ip)
+        }.start()
+    }
+
+    private fun connectToHost(host: String) {
+        // Может вызываться из фонового потока (автопоиск) — UI трогаем только через runOnUiThread
+        runOnUiThread { statusView.text = "Подключение к $host..." }
         remote?.close()
         remote = SamsungRemote(
             host = host,
@@ -131,9 +167,18 @@ class MainActivity : AppCompatActivity() {
     private fun openApps() = sendOrToast { requestApps() }
 
     private fun showApps(apps: List<SamsungRemote.AppInfo>) {
-        val names = apps.map { it.name }.toTypedArray()
+        if (apps.isEmpty()) {
+            AlertDialog.Builder(this)
+                .setTitle("Список приложений")
+                .setMessage("ТВ не выдал список приложений.\nПодробности по каждой стратегии — в «Журнале связи с ТВ».")
+                .setPositiveButton("Журнал") { _, _ -> openLogDialog() }
+                .setNegativeButton("Закрыть", null)
+                .show()
+            return
+        }
+        val names = apps.map { "${it.name}\n(${it.appId})" }.toTypedArray()
         AlertDialog.Builder(this)
-            .setTitle("Приложения на ТВ")
+            .setTitle("Приложения на ТВ (${apps.size})")
             .setItems(names) { _, i ->
                 sendOrToast { launchApp(apps[i].appId) }
             }

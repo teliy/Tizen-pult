@@ -47,7 +47,22 @@ class SamsungRemote(
     @Volatile private var imeSeen = false           // клавиатура на ТВ открывалась в сеансе
     @Volatile private var textBroadcastSent = false // broadcast textReceived — 1 раз за сеанс
 
+    /** ТВ использует самоподписанный сертификат — доверяем ему в рамках локальной сети */
+    private val trustManager: X509TrustManager = object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+        override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
+        override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
+    }
+
     private val client: OkHttpClient = unsafeClient()
+    // Отдельный клиент для REST-проверок: короткие таймауты,
+    // чтобы проба десятка ID не растянулась на минуту
+    private val fastClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(2, TimeUnit.SECONDS)
+        .readTimeout(3, TimeUnit.SECONDS)
+        .sslSocketFactory(client.sslSocketFactory, trustManager)
+        .hostnameVerifier { _, _ -> true }
+        .build()
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     private fun log(msg: String) {
@@ -252,9 +267,9 @@ class SamsungRemote(
             })
 
             if (!imeSeen) {
-                log("Подсказка: ТВ не сообщал об открытой клавиатуре в этом сеансе. " +
-                    "Откройте поле ввода на ТВ (поиск YouTube и т.п.), дождитесь ⌨ в журнале и повторите")
-                onStatus("⌨ Откройте поле ввода на ТВ и повторите отправку")
+                log("Подсказка: ТВ принимает текст только когда открыто поле ввода. " +
+                    "Откройте на ТВ поиск (HOME → Поиск или значок лупы), поставьте курсор в строку и повторите отправку")
+                onStatus("⌨ Откройте поле ввода/поиск на ТВ и повторите отправку")
             }
         }.start()
     }
@@ -276,17 +291,17 @@ class SamsungRemote(
 
             log("WS-запуск не подтверждён — пробую REST POST (порт 8001, затем 8002)")
             val t = token
-            var code = restCall("http", 8001, "applications/$appId", "POST")
+            var code = restGet("http", 8001, "applications/$appId", "POST").first
             if (code == 401 && !t.isNullOrBlank()) {
-                code = restCall("http", 8001, "applications/$appId?token=$t", "POST")
+                code = restGet("http", 8001, "applications/$appId?token=$t", "POST").first
             }
             if (code in 200..299) {
                 log("✔ Приложение запущено (REST 8001, HTTP $code)")
                 return@Thread
             }
-            var code2 = restCall("https", 8002, "applications/$appId", "POST")
+            var code2 = restGet("https", 8002, "applications/$appId", "POST").first
             if (code2 == 401 && !t.isNullOrBlank()) {
-                code2 = restCall("https", 8002, "applications/$appId?token=$t", "POST")
+                code2 = restGet("https", 8002, "applications/$appId?token=$t", "POST").first
             }
             if (code2 in 200..299) {
                 log("✔ Приложение запущено (REST 8002, HTTP $code2)")
@@ -322,10 +337,12 @@ class SamsungRemote(
     }
 
     /**
-     * Список приложений. На Tizen 5+ (2020+) Samsung отключила ответ на
-     * ed.installedApp.get (issue #23 эталонной библиотеки), поэтому если ТВ молчит —
-     * REST-проверка известных приложений по списку сообщества. Для ТВ 2020+ первыми
-     * идут новые (правые) ID. ВНИМАНИЕ: YouTube = 111299001912 (11101200001 — это Netflix!).
+     * Список приложений — каскад из трёх стратегий:
+     * 1) WS ed.installedApp.get (на Tizen 5+ Samsung отключила ответ — issue #23 эталона);
+     * 2) REST GET /api/v2/applications (полный список, если прошивка умеет);
+     * 3) REST-проверка известных приложений по ID (таблицы сообщества:
+     *    tavicu/homebridge-samsung-tizen, rs.ltd) — 200 = установлено.
+     * Каждый шаг пишет в журнал свой результат.
      */
     fun requestApps() {
         appsReceived = false
@@ -340,70 +357,115 @@ class SamsungRemote(
             Thread.sleep(4000)
             if (appsReceived) return@Thread
 
-            log("ТВ молчит: на Tizen 5+ список по WS отключён Samsung (issue #23 эталона)")
-            log("REST-проверка известных приложений — каждый запрос пишет свой код:")
-            val known = listOf(
-                "111299001912" to "YouTube",
-                "11101200001" to "Netflix",
-                "3201907018807" to "Netflix (нов. ID)",
-                "3201907018784" to "Интернет",
-                "org.tizen.browser" to "Интернет (стар. ID)",
-                "3201910019365" to "Prime Video",
-                "3201606009684" to "Spotify"
-            )
+            log("ТВ молчит по WS — на Tizen 5+ список через ed.installedApp.get отключён Samsung")
             val found = mutableListOf<AppInfo>()
             val seenNames = mutableSetOf<String>()
-            val t = token
-            for ((id, name) in known) {
-                var code = restCall("http", 8001, "applications/$id", "GET")
-                if (code == 401 && !t.isNullOrBlank()) {
-                    code = restCall("http", 8001, "applications/$id?token=$t", "GET")
-                }
-                var code2 = -1
-                if (code !in 200..299) {
-                    code2 = restCall("https", 8002, "applications/$id", "GET")
-                    if (code2 == 401 && !t.isNullOrBlank()) {
-                        code2 = restCall("https", 8002, "applications/$id?token=$t", "GET")
+
+            // Стратегия 2: REST-список целиком (маловероятно, но проверяем — дёшево)
+            log("Стратегия 2: GET /api/v2/applications (полный список) на 8001 и 8002")
+            for ((scheme, port) in listOf("http" to 8001, "https" to 8002)) {
+                val (code, body) = restGet(scheme, port, "applications")
+                if (code in 200..299) {
+                    val list = parseAppJson(body)
+                    log("↳ $scheme:$port отдал ${list.size} приложений")
+                    for (a in list) {
+                        if (seenNames.add(a.name)) found.add(a)
                     }
-                }
-                if (code in 200..299 || code2 in 200..299) {
-                    val clean = name.substringBefore(" (")
-                    if (seenNames.add(clean)) found.add(AppInfo(id, clean))
-                    log("✔ $name установлен (HTTP ${if (code in 200..299) code else code2})")
+                    if (found.isNotEmpty()) break
                 }
             }
+
+            // Стратегия 3: по одному ID из таблицы известных приложений
+            if (found.isEmpty()) {
+                log("Стратегия 3: проверяю ${KNOWN_APPS.size} известных ID (200 = установлено, 404 = нет)")
+                val t = token
+                for ((i, app) in KNOWN_APPS.withIndex()) {
+                    val (id, name) = app
+                    var (code, body) = restGet("http", 8001, "applications/$id")
+                    // Порт 8001 мёртв (сеть) или требует токен — пробуем 8002;
+                    // чистый 404 значит порт жив, а приложения просто нет
+                    if (code == -1 || code == 401) {
+                        if (code == 401 && !t.isNullOrBlank()) {
+                            val r = restGet("http", 8001, "applications/$id?token=$t")
+                            code = r.first; body = r.second
+                        }
+                        if (code == -1) {
+                            code = restGet("https", 8002, "applications/$id").first
+                        }
+                    }
+                    if (i == 0 && code == -1) {
+                        log("ТВ не отвечает по REST — прерываю проверку (сеть/ТВ выключен)")
+                        break
+                    }
+                    if (code in 200..299) {
+                        val nameFromBody = try { JSONObject(body).optString("name") } catch (_: Exception) { "" }
+                        val clean = nameFromBody.ifBlank { name }.substringBefore(" (")
+                        if (seenNames.add(clean)) found.add(AppInfo(id, clean))
+                    }
+                }
+            }
+
             if (found.isNotEmpty()) {
+                log("✔ Итого установленных из известных: ${found.size}")
                 onApps(found)
-                log("Найдено установленных: ${found.size}")
             } else {
-                log("Ни один ID не ответил 200 — пришлите журнал целиком: по кодам будет видно, жив ли REST на этой прошивке")
+                log("Список получить не удалось — пришлите журнал целиком: по кодам 404/401/-1 видно, что отвечает прошивка")
+                onApps(emptyList())
             }
         }.start()
     }
 
+    /** Разбор возможных форматов REST-списка: {"data":[…]}, {"data":{"data":[…]}}, [ … ] */
+    private fun parseAppJson(body: String): List<AppInfo> {
+        val out = mutableListOf<AppInfo>()
+        try {
+            val root = JSONObject(body)
+            var arr: JSONArray? = null
+            for (key in listOf("data", "dataList", "results")) {
+                when (val v = root.opt(key)) {
+                    is JSONArray -> { arr = v; break }
+                    is JSONObject -> {
+                        val inner = v.optJSONArray("data")
+                        if (inner != null) { arr = inner; break }
+                    }
+                }
+            }
+            if (arr != null) {
+                for (i in 0 until arr.length()) {
+                    val a = arr.optJSONObject(i) ?: continue
+                    val id = a.optString("appId").ifBlank { a.optString("id") }
+                    val name = a.optString("name").ifBlank { a.optString("appName") }
+                    if (id.isNotBlank()) out.add(AppInfo(id, name.ifBlank { id }))
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
     /**
-     * REST-запрос к ТВ через OkHttp (он настроен доверять самоподписанному
-     * сертификату ТВ — важно для https:8002). Каждый вызов пишет в журнал строку вида
-     * «↳ HTTP 404 ← http:8001 GET applications/...» — для диагностики.
-     * Возвращает HTTP-код, -1 при сетевой ошибке.
+     * REST-запрос к ТВ через OkHttp (доверяет самоподписанному сертификату ТВ —
+     * важно для https:8002). Каждый вызов пишет в журнал строку вида
+     * «↳ HTTP 404 ← http:8001 GET /api/v2/applications/... :: тело» — для диагностики.
+     * Возвращает (HTTP-код, тело); код -1 при сетевой ошибке.
      */
-    private fun restCall(scheme: String, port: Int, route: String, method: String): Int {
+    private fun restGet(scheme: String, port: Int, route: String, method: String = "GET"): Pair<Int, String> {
         return try {
             val postBody: RequestBody? = if (method == "POST") ByteArray(0).toRequestBody() else null
             val request = Request.Builder()
                 .url("$scheme://$host:$port/api/v2/$route")
                 .method(method, postBody)
                 .build()
-            client.newCall(request).execute().use { resp ->
+            fastClient.newCall(request).execute().use { resp ->
                 val code = resp.code
                 val body = resp.body?.string() ?: ""
-                val bodyPart = if (body.isNotBlank()) " :: " + body.take(140) else ""
+                val bodyPart = if (body.isNotBlank()) " :: " + body.take(160).replace('\n', ' ') else ""
                 log("↳ HTTP $code ← $scheme:$port $method /api/v2/$route$bodyPart")
-                code
+                code to body
             }
         } catch (e: Exception) {
             log("!! REST $method $scheme:$port/$route: ${e.message}")
-            -1
+            -1 to ""
         }
     }
 
@@ -415,23 +477,53 @@ class SamsungRemote(
         ws = null
     }
 
-    /** ТВ использует самоподписанный сертификат — доверяем ему в рамках локальной сети */
     private fun unsafeClient(): OkHttpClient {
-        val trustAll = object : X509TrustManager {
-            override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-            override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?) {}
-            override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
-        }
         val ssl = SSLContext.getInstance("TLS")
-        ssl.init(null, arrayOf<TrustManager>(trustAll), SecureRandom())
+        ssl.init(null, arrayOf<TrustManager>(trustManager), SecureRandom())
         return OkHttpClient.Builder()
             .connectTimeout(6, TimeUnit.SECONDS)
-            .sslSocketFactory(ssl.socketFactory, trustAll)
+            .sslSocketFactory(ssl.socketFactory, trustManager)
             .hostnameVerifier { _, _ -> true }
             .build()
     }
 
     companion object {
+        /**
+         * Известные app-ID (таблицы сообщества: tavicu/homebridge-samsung-tizen,
+         * gist QE49Q85T, rs.ltd). Проверяются GET-запросом: 200 = установлено.
+         * YouTube (111299001912) и Netflix убраны — по решению владельца пульта.
+         */
+        val KNOWN_APPS: List<Pair<String, String>> = listOf(
+            "org.tizen.browser" to "Интернет",
+            "3201907018784" to "Интернет (2020+)",
+            "3202010022079" to "Интернет (2021+)",
+            "3202405035480" to "Samsung TV Plus",
+            "3201606009684" to "Spotify",
+            "3202203026841" to "Twitch",
+            "3202102023078" to "GeForce NOW",
+            "3201702011851" to "Steam Link",
+            "3202009021808" to "IPTV Smarters Pro",
+            "3202102022877" to "SmartOne IPTV",
+            "3201512006963" to "Plex",
+            "3201606009872" to "Emby",
+            "3201910019365" to "Prime Video",
+            "3201512006785" to "Prime Video (стар. ID)",
+            "3201807016597" to "Apple TV",
+            "3201908019041" to "Apple Music",
+            "3201710014874" to "Amazon Music",
+            "3201608010191" to "Deezer",
+            "121299000101" to "TuneIn",
+            "3201806016390" to "DAZN",
+            "3201901017640" to "Disney+",
+            "3202009021709" to "Disney+ (2021+)",
+            "3201710014981" to "Paramount+",
+            "3201808016802" to "Pluto TV",
+            "3201803015944" to "Discovery+",
+            "3201710015016" to "SmartThings",
+            "3201710015037" to "Gallery",
+            "3201602007756" to "Red Bull TV"
+        )
+
         /**
          * Wake-on-LAN: пробуждение ТВ из режима сна.
          * На ТВ должно быть включено: Настройки -> Общие -> Сеть -> Пробуждение по сети.
