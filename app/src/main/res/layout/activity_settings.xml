@@ -62,6 +62,13 @@
                 android:layout_marginTop="6dp"
                 android:text="Найти ТВ в сети" />
 
+            <!-- v3.3: переименование выбранного ТВ (имя видно в списке на пульте и здесь) -->
+            <Button
+                android:id="@+id/btnRename"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="✎ Переименовать выбранный ТВ" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

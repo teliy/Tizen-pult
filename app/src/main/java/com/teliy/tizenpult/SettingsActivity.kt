@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.InputType
 import android.view.View
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
@@ -62,6 +63,7 @@ class SettingsActivity : AppCompatActivity() {
         showSavedHost()
 
         findViewById<Button>(R.id.btnFind).setOnClickListener { findTv() }
+        findViewById<Button>(R.id.btnRename).setOnClickListener { renameTv() } // v3.3
         findViewById<Button>(R.id.btnConnect).setOnClickListener { connectManual() }
         findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
         findViewById<Button>(R.id.btnMacSave).setOnClickListener { saveMac() }
@@ -140,6 +142,54 @@ class SettingsActivity : AppCompatActivity() {
                 }
             }
         }.start()
+    }
+
+    /**
+     * v3.3: переименование выбранного ТВ — имя сохраняется в истории (TvStore)
+     * и видно в списке на пульте и в настройках. Если ТВ ещё не в истории
+     * (только что ввели IP вручную) — добавляем запись с этим именем.
+     */
+    private fun renameTv() {
+        val host = prefs.getString("host", null)
+        if (host.isNullOrBlank()) {
+            toast("Сначала выберите ТВ")
+            return
+        }
+        val list = TvStore.load(prefs)
+        val entry = list.firstOrNull { it.ip == host }
+        val current = entry?.name?.takeIf { it.isNotBlank() } ?: host
+        val input = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            maxLines = 1
+            setText(current)
+            setSelection(current.length)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Переименовать ТВ")
+            .setMessage("$host\n\nИмя появится в списке ТВ на пульте и здесь.")
+            .setView(input)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val newName = input.text.toString().trim()
+                if (newName.isEmpty()) {
+                    toast("Имя пустое — оставили как было")
+                    return@setPositiveButton
+                }
+                val i = list.indexOfFirst { it.ip == host }
+                if (i >= 0) list[i] = list[i].copy(name = newName)
+                else list.add(
+                    0,
+                    TvStore.KnownTv(
+                        ip = host, name = newName, model = "",
+                        lastSeen = System.currentTimeMillis()
+                    )
+                )
+                TvStore.save(prefs, list)
+                refreshTvSpinner(host)
+                showSavedHost()
+                toast("Переименовано: $newName")
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
     }
 
     /** Сохранить IP вручную; подключение выполнит главный экран при возврате */

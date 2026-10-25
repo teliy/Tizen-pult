@@ -7,15 +7,22 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
+import android.util.TypedValue
+import android.view.DragEvent
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -48,8 +55,14 @@ class MainActivity : AppCompatActivity() {
     /** v3.1: хост последнего подключения (смена ТВ в настройках → переподключение) */
     private var lastHostApplied: String? = null
 
-    /** v3.1: первый onResume уже прошёл (автопоиск в onCreate сам подключается) */
+    /** v3.3: первый onResume уже прошёл; без сохранённого ТВ при старте идёт автопоиск */
     private var startedOnce = false
+
+    /** v3.3: режим расстановки блоков пульта (drag-n-drop) */
+    private var editMode = false
+
+    /** v3.3: подавление срабатывания спиннера ТВ при программной установке */
+    private var suppressPicker = false
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -64,10 +77,12 @@ class MainActivity : AppCompatActivity() {
         statusView = findViewById(R.id.statusView)
         tvNowView = findViewById(R.id.tvNowView)
 
-        // v3.1: настройки — поиск/выбор ТВ, темы оформления, MAC, обновления
+        // v3.3: выбор ТВ — в шапке пульта; ⚙ — настройки (поиск ТВ там); ✎ — расстановка блоков
         findViewById<Button>(R.id.btnSettings).setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
+        findViewById<Button>(R.id.btnEditLayout).setOnClickListener { toggleEditMode() }
+        setupDragAndDrop() // v3.3: восстановить порядок блоков + приёмник перетаскивания
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
         findViewById<Button>(R.id.btnUrl).setOnClickListener { showUrlDialog() }
@@ -85,7 +100,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         renderMacrosRow() // макросы per-ТВ — кнопки на главном экране
-        findTv(manual = false) // автопоиск ТВ и подключение при запуске
+
+        // v3.3: без автопоиска при каждом старте — подключаемся к сохранённому ТВ
+        // напрямую; полный поиск остаётся в ⚙ Настройках (и при первом запуске)
+        val host = prefs.getString("host", null)
+        if (host.isNullOrBlank()) findTv(manual = false) else connectToHost(host)
     }
 
     override fun onResume() {
@@ -103,6 +122,242 @@ class MainActivity : AppCompatActivity() {
             connectToHost(host)
         }
         startedOnce = true
+        refreshTvPicker(host) // v3.3: синхронизация списка ТВ в шапке после настроек
+    }
+
+    // ---------- v3.3: выбор ТВ в шапке пульта ----------
+
+    /**
+     * Выпадающий список ТВ в шапке: история (TvStore) + текущий хост.
+     * Пустой список → пункт-подсказка, тап открывает «⚙ Настройки» (там поиск ТВ).
+     * Выбор ТВ сразу сохраняется в prefs «host» и подключается.
+     */
+    private fun refreshTvPicker(selectIp: String?) {
+        val spinner = findViewById<Spinner>(R.id.tvPicker)
+        data class Opt(val label: String, val ip: String)
+        val opts = mutableListOf<Opt>()
+        val seen = mutableSetOf<String>()
+        for (k in TvStore.load(prefs)) {
+            if (seen.add(k.ip)) {
+                val mark = if (selectIp == k.ip) "▸ " else ""
+                val old = if (k.legacy) " — старый" else ""
+                val nm = k.name.ifBlank { k.model.ifBlank { "Samsung" } }
+                opts.add(Opt("$mark$nm — ${k.ip}$old", k.ip))
+            }
+        }
+        if (selectIp != null && seen.add(selectIp)) {
+            opts.add(0, Opt("▸ $selectIp", selectIp))
+        }
+        if (opts.isEmpty()) opts.add(Opt("ТВ не выбран — поиск в ⚙ Настройках", ""))
+
+        suppressPicker = true
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, opts.map { it.label })
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        spinner.adapter = adapter
+        val sel = opts.indexOfFirst { it.ip == selectIp }
+        if (sel >= 0) spinner.setSelection(sel)
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (suppressPicker) return
+                val opt = opts.getOrNull(pos) ?: return
+                if (opt.ip.isEmpty()) {
+                    // пункт-подсказка — ведём в настройки, где живёт поиск ТВ
+                    startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                    return
+                }
+                prefs.edit().putString("host", opt.ip).apply()
+                connectToHost(opt.ip)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+        // onItemSelected приходит после отрисовки — снимаем блокировку позже
+        spinner.post { suppressPicker = false }
+    }
+
+    // ---------- v3.3: расстановка блоков пульта (drag-n-drop) ----------
+
+    private val unitPrefix = "unit:"
+
+    /** Дефолтный порядок блоков (в разметке); новые блоки добавляются в конец */
+    private val defaultOrder = listOf(
+        "apps", "url", "macros", "text", "power", "volch", "mute", "media",
+        "digits", "dpad", "touchpad", "home", "hdmi", "ext", "log"
+    )
+
+    private fun unitKey(v: View): String? =
+        (v.tag as? String)?.takeIf { it.startsWith(unitPrefix) }?.substring(unitPrefix.length)
+
+    private fun forEachUnit(root: LinearLayout, block: (View) -> Unit) {
+        for (i in 0 until root.childCount) {
+            val c = root.getChildAt(i)
+            if (unitKey(c) != null) block(c)
+        }
+    }
+
+    private fun toggleEditMode() {
+        if (editMode) exitEditMode() else enterEditMode()
+    }
+
+    private fun enterEditMode() {
+        editMode = true
+        val root = findViewById<LinearLayout>(R.id.remoteRoot)
+        findViewById<TextView>(R.id.editHint).visibility = View.VISIBLE
+        findViewById<Button>(R.id.btnEditLayout).text = "✓"
+        forEachUnit(root) { u ->
+            setInteractive(u, false)
+            applyUnitChrome(u, on = true)
+            u.setOnLongClickListener { startUnitDrag(u); true }
+        }
+        toast("Расстановка: удерживайте блок и тяните. «✓» — сохранить")
+    }
+
+    private fun exitEditMode() {
+        editMode = false
+        val root = findViewById<LinearLayout>(R.id.remoteRoot)
+        findViewById<TextView>(R.id.editHint).visibility = View.GONE
+        findViewById<Button>(R.id.btnEditLayout).text = "✎"
+        forEachUnit(root) { u ->
+            setInteractive(u, true)
+            applyUnitChrome(u, on = false)
+            u.setOnLongClickListener(null)
+            u.isClickable = false
+            u.isLongClickable = false
+        }
+        saveLayoutOrder(root)
+        toast("Расположение сохранено")
+    }
+
+    /** В режиме расстановки гасим интерактивность содержимого блока — тапы не управляют ТВ */
+    private fun setInteractive(v: View, on: Boolean) {
+        if (v is ViewGroup) {
+            for (i in 0 until v.childCount) setInteractive(v.getChildAt(i), on)
+        }
+        when (v) {
+            is EditText -> {
+                v.isFocusable = on
+                v.isFocusableInTouchMode = on
+                v.isClickable = on
+                v.isLongClickable = on
+            }
+            is Button -> {
+                v.isClickable = on
+                v.isLongClickable = on
+            }
+        }
+    }
+
+    /** Рамка режима расстановки вокруг блока (цвет — colorPrimary темы) */
+    private fun applyUnitChrome(u: View, on: Boolean) {
+        val d = u.resources.displayMetrics.density
+        if (!on) {
+            u.background = null
+            u.setPadding(0, 0, 0, 0)
+            return
+        }
+        val tv = TypedValue()
+        val color = if (theme.resolveAttribute(R.attr.colorPrimary, tv, true)) tv.data
+        else 0xFF5B6CF0.toInt()
+        u.background = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = 8f * d
+            setStroke((1.4f * d).toInt().coerceAtLeast(1), color)
+            setColor(0x14000000 or (color and 0x00FFFFFF))
+        }
+        u.setPadding((6 * d).toInt(), (2 * d).toInt(), (6 * d).toInt(), (2 * d).toInt())
+    }
+
+    /** Долгий тап по блоку в режиме расстановки — начинаем перетаскивание */
+    private fun startUnitDrag(u: View) {
+        if (unitKey(u) == null) return
+        u.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        val data = ClipData.newPlainText("unit", unitKey(u))
+        u.startDragAndDrop(data, View.DragShadowBuilder(u), u, 0)
+    }
+
+    /** Восстановить сохранённый порядок блоков и повесить приёмник перетаскивания */
+    private fun setupDragAndDrop() {
+        val root = findViewById<LinearLayout>(R.id.remoteRoot)
+        restoreLayoutOrder(root)
+        root.setOnDragListener { _, ev ->
+            when (ev.action) {
+                DragEvent.ACTION_DRAG_STARTED ->
+                    ev.clipDescription?.label?.toString() == "unit" && ev.localState is View
+                DragEvent.ACTION_DRAG_LOCATION -> {
+                    moveDragged(root, ev)
+                    autoScrollWhileDrag(root, ev)
+                    true
+                }
+                DragEvent.ACTION_DROP -> true
+                DragEvent.ACTION_DRAG_ENDED -> {
+                    if (editMode) saveLayoutOrder(root)
+                    true
+                }
+                else -> true
+            }
+        }
+    }
+
+    /** Живая перестановка: блок следует за пальцем между позициями других блоков */
+    private fun moveDragged(root: LinearLayout, ev: DragEvent) {
+        val dragged = ev.localState as? View ?: return
+        val units = (0 until root.childCount).map { root.getChildAt(it) }
+            .filter { unitKey(it) != null }
+        val ci = units.indexOf(dragged)
+        if (ci < 0) return
+        // сколько блоков (без перетаскиваемого) выше пальца — это позиция вставки
+        var ins = 0
+        for (u in units) {
+            if (u === dragged) continue
+            if (ev.y > u.top + u.height / 2f) ins++
+        }
+        if (ins == ci) return // позиция не меняется
+        root.removeView(dragged)
+        val remaining = units.filter { it !== dragged }
+        if (ins >= remaining.size) {
+            val last = remaining.lastOrNull()
+            root.addView(dragged, if (last == null) 0 else root.indexOfChild(last) + 1)
+        } else {
+            root.addView(dragged, root.indexOfChild(remaining[ins]))
+        }
+    }
+
+    /** Автопрокрутка экрана, когда палец с блоком у верхнего/нижнего края */
+    private fun autoScrollWhileDrag(root: LinearLayout, ev: DragEvent) {
+        val sv = root.parent as? ScrollView ?: return
+        val d = resources.displayMetrics.density
+        val edge = 48 * d
+        val rel = ev.y - sv.scrollY
+        val step = (6 * d).toInt()
+        when {
+            rel < edge -> sv.scrollBy(0, -step)
+            rel > sv.height - edge -> sv.scrollBy(0, step)
+        }
+    }
+
+    /** Порядок блоков — в prefs «layout_order» */
+    private fun saveLayoutOrder(root: LinearLayout) {
+        val order = (0 until root.childCount).mapNotNull { unitKey(root.getChildAt(it)) }
+        prefs.edit().putString("layout_order", order.joinToString(",")).apply()
+    }
+
+    /** Расставить блоки по сохранённому порядку; новые блоки — в дефолтные позиции */
+    private fun restoreLayoutOrder(root: LinearLayout) {
+        val saved = prefs.getString("layout_order", null) ?: return
+        val savedKeys = saved.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        if (savedKeys.isEmpty()) return
+        val byKey = HashMap<String, View>()
+        forEachUnit(root) { byKey[unitKey(it)!!] = it }
+        val finalKeys = savedKeys.filter { byKey.containsKey(it) } +
+            defaultOrder.filter { it in byKey && it !in savedKeys }
+        val current = (0 until root.childCount).mapNotNull { unitKey(root.getChildAt(it)) }
+        if (finalKeys == current) return
+        for (v in byKey.values) root.removeView(v)
+        val footer = findViewById<View>(R.id.footerHint)
+        var idx = root.indexOfChild(footer).let { if (it < 0) root.childCount else it }
+        for (k in finalKeys) {
+            byKey[k]?.let { root.addView(it, idx); idx++ }
+        }
     }
 
     /** Кнопки с андроид:tag="KEY_..." в разметке обрабатываются здесь */
