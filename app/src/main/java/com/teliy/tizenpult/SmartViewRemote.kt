@@ -114,27 +114,19 @@ class SmartViewRemote(
         ws = null
     }
 
-    /** Клавиша: {"plugin":"RemoteControl","param2":"Click","param3":KEY,…} */
+    /** Клавиша: {"plugin": "RemoteControl", "param2": "Click", "param3": KEY, …} */
     fun sendKey(key: String) {
         val w = ws
         if (!authOk || w == null) {
             log("!! нет сеанса Smart View 2.0 — нажмите «Подключ.»")
             return
         }
-        val body = JSONObject().apply {
-            put("plugin", "RemoteControl")
-            put("param1", "uuid:$APP_ID")
-            put("param2", "Click")
-            put("param3", key)
-            put("param4", false)
-            put("api", "SendRemoteKey")
-            put("version", "1.000")
-        }
-        val payload = JSONObject().apply {
-            put("method", "POST")
-            put("body", body)
-        }
-        val frame = encryptFrame(payload.toString())
+        // формат json.dumps (как в эталоне): пробелы после «:» и «,» — байт-в-байт
+        // с эталонным тест-вектором команды (KEY_POWER, 192 байта)
+        val payload = "{\"method\": \"POST\", \"body\": {\"plugin\": \"RemoteControl\", " +
+            "\"param1\": \"uuid:$APP_ID\", \"param2\": \"Click\", \"param3\": \"$key\", " +
+            "\"param4\": false, \"api\": \"SendRemoteKey\", \"version\": \"1.000\"}}"
+        val frame = encryptFrame(payload)
         val sent = w.send(frame)
         log(if (sent) "▶ $key (Smart View 2.0)" else "!! НЕ отправлено — соединение закрыто")
     }
@@ -161,25 +153,26 @@ class SmartViewRemote(
         }
         onStatus("Введите PIN, который появился на экране ТВ")
 
-        // Шаг 0
-        val step0 = http(restPort, "GET", pairingUrl(0) + "&type=1", null)
-        log("Сопряжение шаг 0: HTTP ${step0.first}")
-
-        // Шаг 1 с PIN (до 3 попыток)
+        // Шаг 1 с PIN (до 3 попыток). Шаг 0 — перед КАЖДОЙ попыткой, как в эталоне
+        // (try_pin() = шаг 0 + шаг 1): после неудачной попытки ТВ ждёт нового шага 0,
+        // иначе шаг 2 отклоняется с HTTP 403 (сеанс сопряжения не сброшен).
         var result: SmartViewCrypto.ClientHelloResult? = null
         for (attempt in 1..3) {
             val pin = askPin(retry = attempt > 1) ?: run {
                 log("Ввод PIN отменён")
                 onStatus("Сопряжение отменено")
+                closePinPage(restPort)
                 return false
             }
+            val step0 = http(restPort, "GET", pairingUrl(0) + "&type=1", null)
+            log("Сопряжение шаг 0: HTTP ${step0.first}")
             val hello = SmartViewCrypto.generateServerHello(USER_ID, pin)
             val content = "{\"auth_Data\":{\"auth_type\":\"SPC\",\"GeneratorServerHello\":\"" +
                 hello.serverHelloHex + "\"}}"
             val (code1, resp1) = http(restPort, "POST", pairingUrl(1), content)
             log("Сопряжение шаг 1: HTTP $code1")
             if (code1 !in 200..299) {
-                log("ТВ отклонил ServerHello — повторите ввод PIN")
+                log("ТВ отклонил ServerHello (HTTP $code1): ${resp1.take(160)}")
                 continue
             }
             val clientHello = Regex(
@@ -196,6 +189,7 @@ class SmartViewRemote(
         }
         val auth = result ?: run {
             onStatus("PIN не принят — попробуйте ещё раз («Подключ.»)")
+            closePinPage(restPort)
             return false
         }
 
@@ -205,12 +199,20 @@ class SmartViewRemote(
             serverAck + "\"}}"
         val (code2, resp2) = http(restPort, "POST", pairingUrl(2), content2)
         log("Сопряжение шаг 2: HTTP $code2")
+        if (code2 !in 200..299) {
+            log("✖ ТВ отклонил подтверждение сопряжения: ${resp2.take(160)}")
+            onStatus("ТВ отклонил подтверждение — нажмите «Подключ.» и введите PIN заново")
+            closePinPage(restPort)
+            return false
+        }
         // auth_data — JSON-поле или сырой текст ответа (как в эталоне)
         val authData = try {
             JSONObject(resp2).optString("auth_data", "").ifBlank { resp2 }
         } catch (_: Exception) { resp2 }
         if (authData.isBlank()) {
             log("✖ ТВ вернул пустой auth_data — окно PIN истекло, повторите сопряжение")
+            onStatus("Окно PIN истекло — нажмите «Подключ.» и введите PIN заново")
+            closePinPage(restPort)
             return false
         }
         val clientAck = Regex(
@@ -221,16 +223,20 @@ class SmartViewRemote(
             .find(authData)?.groupValues?.get(1)
         if (clientAck == null || session == null) {
             log("✖ В ответе нет ClientAckMsg/session_id: ${resp2.take(160)}")
+            onStatus("Неожиданный ответ ТВ — попробуйте сопряжение заново")
+            closePinPage(restPort)
             return false
         }
         val expectedAck = SmartViewCrypto.expectedClientAcknowledge(auth.skPrime)
         if (!clientAck.equals(expectedAck, ignoreCase = true)) {
             log("✖ ClientAckMsg ТВ не совпал с ожидаемым")
+            onStatus("ТВ не подтвердил сеанс — попробуйте сопряжение заново")
+            closePinPage(restPort)
             return false
         }
 
         // Закрыть страницу PIN на ТВ
-        http(restPort, "DELETE", "ws/apps/CloudPINPage/run", null)
+        closePinPage(restPort)
 
         tokenHex = auth.ctxHex
         sessionId = session
@@ -241,6 +247,11 @@ class SmartViewRemote(
 
     private fun pairingUrl(step: Int): String =
         "ws/pairing?step=$step&app_id=$APP_ID&device_id=$deviceId"
+
+    /** Закрыть страницу PIN на ТВ (тихо; вызывается и при ошибках сопряжения) */
+    private fun closePinPage(restPort: Int) {
+        http(restPort, "DELETE", "ws/apps/CloudPINPage/run", null, quiet = true)
+    }
 
     private fun askPin(retry: Boolean): String? {
         val latch = CountDownLatch(1)
