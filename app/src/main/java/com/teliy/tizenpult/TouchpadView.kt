@@ -39,7 +39,8 @@ class TouchpadView(
     mouseMode: Boolean,
     private val onMove: (Int, Int) -> Unit,   // MOUSE: дельта сдвига курсора ТВ (dX,dY)
     private val onClick: () -> Unit,          // MOUSE: LeftClick / ARROWS: KEY_ENTER
-    private val onArrow: (String) -> Unit     // ARROWS: KEY_UP/DOWN/LEFT/RIGHT
+    private val onArrow: (String) -> Unit,    // ARROWS: KEY_UP/DOWN/LEFT/RIGHT
+    private val onLongClick: (() -> Unit)? = null // MOUSE: RightClick (удержание, v3.0)
 ) : View(context) {
 
     /** Переключение режима на лету (тумблер «мышь ⇄ стрелки» в диалоге тачпада) */
@@ -56,6 +57,7 @@ class TouchpadView(
         private const val MOVE_SEND_INTERVAL_MS = 40L  // не чаще ~25 кадров/с
         private const val ARROW_SEND_INTERVAL_MS = 60L // пауза между стрелками
         private const val CLICK_SLOP_DP = 18f          // тап — без сдвига пальца
+        private const val LONG_PRESS_MS = 550L         // удержание = правый клик (v3.0)
     }
 
     // Виртуальный курсор (координаты ТВ, для отрисовки на тачпаде), старт — центр
@@ -76,6 +78,16 @@ class TouchpadView(
     private var lastArrowAt = 0L
     private var lastDir = ""         // последняя стрелка (для подсветки)
     private var lastDirAt = 0L
+    private var longFired = false    // удержание уже сработало (тап подавить)
+
+    /** v3.0: удержание пальца без сдвига = правый клик мыши (только режим мыши) */
+    private val longPressCheck = Runnable {
+        if (mouseMode && !longFired && gestureDistance < dp(CLICK_SLOP_DP)) {
+            longFired = true
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            onLongClick?.invoke()
+        }
+    }
 
     // Кисти
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF10161D.toInt() }
@@ -106,6 +118,9 @@ class TouchpadView(
                 lastTouchX = e.x; lastTouchY = e.y
                 gestureDistance = 0f; accX = 0f; accY = 0f
                 lastSend = 0L // новый жест не должен попадать под троттлинг прошлого
+                longFired = false
+                removeCallbacks(longPressCheck)
+                postDelayed(longPressCheck, LONG_PRESS_MS)
                 parent?.requestDisallowInterceptTouchEvent(true)
                 return true
             }
@@ -114,10 +129,19 @@ class TouchpadView(
                 val dy = e.y - lastTouchY
                 gestureDistance += hypot(dx.toDouble(), dy.toDouble()).toFloat()
                 lastTouchX = e.x; lastTouchY = e.y
+                // палец уехал — это уже не удержание, отменяем правый клик
+                if (gestureDistance >= dp(CLICK_SLOP_DP)) removeCallbacks(longPressCheck)
                 if (mouseMode) moveMouse(dx, dy) else pushArrows(dx, dy)
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                removeCallbacks(longPressCheck)
+                if (longFired) {
+                    // правый клик уже отправлен по таймеру удержания — тап не дублируем
+                    longFired = false
+                    invalidate()
+                    return true
+                }
                 if (gestureDistance < dp(CLICK_SLOP_DP)) {
                     performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                     onClick()
@@ -200,7 +224,7 @@ class TouchpadView(
             c.drawCircle(cx, cy, dp(2.2f), dotPaint)
             dimPaint.textAlign = Paint.Align.CENTER
             dimPaint.textSize = dp(12f)
-            c.drawText("проведите пальцем — курсор ТВ; тап — клик", w / 2f, h - dp(10f), dimPaint)
+            c.drawText("курсор ТВ; тап — клик, удержание — правый клик", w / 2f, h - dp(10f), dimPaint)
         } else {
             dimPaint.textAlign = Paint.Align.CENTER
             dimPaint.textSize = dp(26f)

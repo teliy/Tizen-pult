@@ -42,9 +42,21 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="4dp"
-            android:paddingBottom="4dp"
+            android:paddingBottom="2dp"
             android:text="Не подключено"
             android:textStyle="italic" />
+
+        <!-- v3.0: что сейчас на ТВ (канал из событий ms.channel.* / последний запуск) -->
+        <TextView
+            android:id="@+id/tvNowView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingBottom="2dp"
+            android:textColor="#1B5E20"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:visibility="gone"
+            android:text="На ТВ:" />
 
         <!-- IP вручную (когда ТВ не нашёлся поиском) -->
         <LinearLayout
@@ -82,6 +94,35 @@
             android:paddingTop="4dp"
             android:text="Тап по приложению — запуск на ТВ. Список получаем от ТВ; если прошивка его не отдаёт — показываем найденные популярные приложения."
             android:textSize="12sp" />
+
+        <!-- v3.0: ссылка на экран ТВ — браузер с URL / YouTube deep link -->
+        <Button
+            android:id="@+id/btnUrl"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Открыть ссылку на ТВ (браузер / YouTube)" />
+
+        <!-- v3.0: «Мои кнопки» — макросы (приложение + последовательность клавиш) -->
+        <Button
+            android:id="@+id/btnMacros"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Мои кнопки (макросы)" />
+
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:id="@+id/macrosRow"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:visibility="gone" />
+        </HorizontalScrollView>
 
         <!-- Текст на ТВ -->
         <LinearLayout
@@ -171,6 +212,109 @@
             android:onClick="onKeyClick"
             android:tag="KEY_MUTE"
             android:text="MUTE (звук вкл/выкл)" />
+
+        <!-- v3.0: медиа-кнопки — плеер и перемотка -->
+        <TableLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+
+            <TableRow android:weightSum="3">
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_PLAY"
+                    android:text="▶ PLAY" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_PAUSE"
+                    android:text="⏸ PAUSE" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_STOP"
+                    android:text="⏹ STOP" />
+            </TableRow>
+
+            <TableRow android:weightSum="2">
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_REW"
+                    android:text="⏪ REW" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_FF"
+                    android:text="⏩ FF" />
+            </TableRow>
+        </TableLayout>
+
+        <!-- v3.0: цифры — прямой ввод номера канала -->
+        <TableLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+
+            <TableRow android:weightSum="3">
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_1" android:text="1" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_2" android:text="2" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_3" android:text="3" />
+            </TableRow>
+
+            <TableRow android:weightSum="3">
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_4" android:text="4" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_5" android:text="5" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_6" android:text="6" />
+            </TableRow>
+
+            <TableRow android:weightSum="3">
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_7" android:text="7" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_8" android:text="8" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_9" android:text="9" />
+            </TableRow>
+
+            <TableRow android:weightSum="3">
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_PRECH" android:text="Пред. кан." />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_0" android:text="0" />
+                <Button android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_weight="1" android:layout_margin="2dp" android:onClick="onKeyClick" android:tag="KEY_CHLIST" android:text="Список кан." />
+            </TableRow>
+
+            <TableRow android:weightSum="2">
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_GUIDE"
+                    android:text="GUIDE" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_INFO"
+                    android:text="INFO" />
+            </TableRow>
+        </TableLayout>
 
         <!-- Навигационный крест -->
         <TableLayout
@@ -301,6 +445,67 @@
             </TableRow>
         </TableLayout>
 
+        <!-- v3.0: расширенные клавиши (часть зависит от прошивки) -->
+        <TableLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp">
+
+            <TableRow android:weightSum="3">
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_MENU"
+                    android:text="MENU" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_TOOLS"
+                    android:text="TOOLS" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_SUBTITLE"
+                    android:text="СУБТИТРЫ" />
+            </TableRow>
+
+            <TableRow android:weightSum="3">
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_ASPECT"
+                    android:text="МАСШТАБ" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_PMODE"
+                    android:text="Картинка" />
+                <Button
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:layout_margin="2dp"
+                    android:onClick="onKeyClick"
+                    android:tag="KEY_SMODE"
+                    android:text="Звук" />
+            </TableRow>
+        </TableLayout>
+
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -330,7 +535,7 @@
             android:layout_height="wrap_content"
             android:gravity="center"
             android:paddingTop="2dp"
-            android:text="Версия 2.2"
+            android:text="Версия 3.0"
             android:textSize="12sp" />
 
     </LinearLayout>

@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var ipInput: EditText
     private lateinit var statusView: TextView
+    private lateinit var tvNowView: TextView
 
     private val logLines = ArrayDeque<String>()
     private var logDialogText: TextView? = null
@@ -78,6 +79,7 @@ class MainActivity : AppCompatActivity() {
         prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
         ipInput = findViewById(R.id.ipInput)
         statusView = findViewById(R.id.statusView)
+        tvNowView = findViewById(R.id.tvNowView)
 
         ipInput.setText(prefs.getString("host", ""))
 
@@ -94,6 +96,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 prefs.edit().putString("host", opt.ip).apply()
                 ipInput.setText(opt.ip)
+                renderMacrosRow() // у нового ТВ — свои макросы
                 connectToHost(opt.ip)
             }
 
@@ -104,6 +107,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnFind).setOnClickListener { findTv(manual = true) }
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
+        findViewById<Button>(R.id.btnUrl).setOnClickListener { showUrlDialog() }
+        findViewById<Button>(R.id.btnMacros).setOnClickListener { showMacrosDialog() }
         findViewById<Button>(R.id.btnTouchpad).setOnClickListener { showTouchpad() }
         findViewById<Button>(R.id.btnLog).setOnClickListener { openLogDialog() }
         findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
@@ -119,6 +124,7 @@ class MainActivity : AppCompatActivity() {
 
         // Автопоиск ТВ и подключение при запуске приложения
         refreshTvSpinner(prefs.getString("host", null))
+        renderMacrosRow() // макросы per-ТВ — кнопки на главном экране
         findTv(manual = false)
     }
 
@@ -151,6 +157,17 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** v3.0: строка «На ТВ: …» — текущий канал/приложение (пустая строка — скрыть) */
+    private fun showTvNow(s: String?) {
+        if (s.isNullOrBlank()) {
+            tvNowView.visibility = View.GONE
+            tvNowView.text = ""
+        } else {
+            tvNowView.visibility = View.VISIBLE
+            tvNowView.text = "На ТВ: $s"
+        }
+    }
+
     private fun connectManual() {
         val host = ipInput.text.toString().trim()
         if (host.isEmpty()) {
@@ -158,6 +175,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         prefs.edit().putString("host", host).apply()
+        renderMacrosRow()
         connectToHost(host)
     }
 
@@ -315,6 +333,7 @@ class MainActivity : AppCompatActivity() {
             try {
                 runOnUiThread {
                     statusView.text = "Подключение к $host…"
+                    showTvNow(null) // прежний «На ТВ: …» больше не актуален
                     if (logLines.isNotEmpty()) appendLog("— новый сеанс —")
                 }
 
@@ -381,7 +400,8 @@ class MainActivity : AppCompatActivity() {
             onApps = { apps, catalog -> runOnUiThread { showApps(apps, catalog) } },
             onLog = { s -> runOnUiThread { appendLog(s) } },
             onSmartAuth = { auth -> prefs.edit().putString("sv:$host", auth).apply() },
-            onPin = { retry, submit -> showPinDialog(retry, submit) }
+            onPin = { retry, submit -> showPinDialog(retry, submit) },
+            onTvNow = { s -> runOnUiThread { showTvNow(s) } }
         )
         remote?.close()
         remote = r
@@ -491,14 +511,15 @@ class MainActivity : AppCompatActivity() {
             onClick = {
                 sendOrToast { if (padMouse) sendMouseClick() else sendKey("KEY_ENTER") }
             },
-            onArrow = { key -> sendOrToast { sendKey(key) } }
+            onArrow = { key -> sendOrToast { sendKey(key) } },
+            onLongClick = { sendOrToast { sendMouseRightClick() } }
         )
         box.addView(
             pad,
             LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (270 * d).toInt())
         )
 
-        val mouseHint = "Курсор на экране ТВ: ведите пальцем — он повторит движение, тап — клик. Если курсор не двигается — нажмите «Режим: стрелки» (в браузере ТВ стрелки тоже двигают указатель)."
+        val mouseHint = "Курсор на экране ТВ: ведите пальцем — он повторит движение, тап — клик, удержание — правый клик. Если курсор не двигается — нажмите «Режим: стрелки» (в браузере ТВ стрелки тоже двигают указатель)."
         val arrowsHint = "Режим стрелок: свайп в сторону = стрелки (в браузере ТВ они двигают указатель), тап = OK."
         val hint = TextView(this).apply {
             textSize = 12f
@@ -779,6 +800,323 @@ class MainActivity : AppCompatActivity() {
             }
         }
         dlg.show()
+    }
+
+    // ---------- Ссылка на экран ТВ (v3.0) ----------
+
+    /**
+     * Диалог «Открыть ссылку на ТВ»: любая ссылка — в браузер ТВ (Tizen),
+     * YouTube-ссылка — экспериментально сразу в ТВ-приложение YouTube.
+     * Если в буфере обмена лежит http-ссылка — подставляем её.
+     */
+    private fun showUrlDialog() {
+        val urlInput = EditText(this).apply {
+            hint = "https://www.youtube.com/watch?v=… или любая ссылка"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            maxLines = 1
+        }
+        try {
+            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val clip = cm.primaryClip?.getItemAt(0)?.text?.toString()?.trim()
+            if (!clip.isNullOrBlank() && clip.startsWith("http")) urlInput.setText(clip)
+        } catch (_: Exception) {
+        }
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+            addView(urlInput)
+            addView(TextView(this@MainActivity).apply {
+                textSize = 12f
+                setPadding(0, (8 * pad / 16), 0, 0)
+                text = "«В браузере ТВ» — откроет ссылку в интернете на ТВ (Tizen 2016+).\n" +
+                    "«В YouTube» — эксперимент: ссылка уходит прямо в ТВ-приложение YouTube; " +
+                    "если прошивка его не поддержит — пульт сам откроет ссылку в браузере ТВ."
+            })
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Ссылка на экран ТВ")
+            .setView(box)
+            .setPositiveButton("В браузере ТВ") { _, _ ->
+                val u = urlInput.text.toString().trim()
+                if (u.isEmpty()) toast("Введите ссылку") else sendOrToast { launchBrowserUrl(u) }
+            }
+            .setNeutralButton("В YouTube (эксперим.)") { _, _ ->
+                val u = urlInput.text.toString().trim()
+                if (u.isEmpty()) toast("Введите ссылку") else sendOrToast { launchYouTubeVideo(u) }
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    // ---------- Мои кнопки — макросы (v3.0) ----------
+
+    private data class MacroStep(
+        val type: String,   // "key" | "app"
+        val id: String,     // appId для "app"
+        val name: String,   // название приложения для "app"
+        val key: String     // KEY_* для "key"
+    )
+
+    private data class Macro(val name: String, val steps: List<MacroStep>)
+
+    /** Клавиши, доступные в редакторе макросов */
+    private val MACRO_KEYS = arrayOf(
+        "KEY_VOLUP", "KEY_VOLDOWN", "KEY_MUTE",
+        "KEY_PLAY", "KEY_PAUSE", "KEY_STOP", "KEY_FF", "KEY_REW",
+        "KEY_CHUP", "KEY_CHDOWN", "KEY_INFO", "KEY_GUIDE", "KEY_CHLIST", "KEY_PRECH",
+        "KEY_UP", "KEY_DOWN", "KEY_LEFT", "KEY_RIGHT", "KEY_ENTER",
+        "KEY_HOME", "KEY_RETURN", "KEY_EXIT", "KEY_MENU", "KEY_TOOLS",
+        "KEY_HDMI_1", "KEY_HDMI_2", "KEY_HDMI_3"
+    )
+
+    private fun loadMacros(): List<Macro> {
+        val host = currentTvHost()
+        if (host.isEmpty()) return emptyList()
+        val raw = prefs.getString("macros:$host", null) ?: return emptyList()
+        val out = mutableListOf<Macro>()
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val name = o.optString("name")
+                val stepsArr = o.optJSONArray("steps") ?: continue
+                val steps = mutableListOf<MacroStep>()
+                for (j in 0 until stepsArr.length()) {
+                    val so = stepsArr.optJSONObject(j) ?: continue
+                    steps.add(
+                        MacroStep(
+                            so.optString("type"),
+                            so.optString("id"),
+                            so.optString("name"),
+                            so.optString("key")
+                        )
+                    )
+                }
+                if (name.isNotBlank() && steps.isNotEmpty()) out.add(Macro(name, steps))
+            }
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
+    private fun saveMacros(list: List<Macro>) {
+        val host = currentTvHost()
+        if (host.isEmpty()) return
+        val arr = JSONArray()
+        for (m in list) {
+            val steps = JSONArray()
+            for (s in m.steps) {
+                steps.put(
+                    JSONObject().put("type", s.type).put("id", s.id)
+                        .put("name", s.name).put("key", s.key)
+                )
+            }
+            arr.put(JSONObject().put("name", m.name).put("steps", steps))
+        }
+        prefs.edit().putString("macros:$host", arr.toString()).apply()
+    }
+
+    private fun saveMacro(existing: Macro?, updated: Macro) {
+        val list = loadMacros().toMutableList()
+        if (existing != null) list.removeAll { it.name == existing.name }
+        list.removeAll { it.name == updated.name }
+        list.add(updated)
+        saveMacros(list)
+        renderMacrosRow()
+        toast("Макрос «${updated.name}» сохранён")
+    }
+
+    /** Ряд кнопок макросов на главном экране: тап — выполнить, удержание — редактор */
+    private fun renderMacrosRow() {
+        val row = findViewById<LinearLayout>(R.id.macrosRow)
+        row.removeAllViews()
+        val ms = loadMacros()
+        row.visibility = if (ms.isEmpty()) View.GONE else View.VISIBLE
+        val d = resources.displayMetrics.density
+        for (m in ms) {
+            val b = Button(this).apply {
+                text = m.name
+                isAllCaps = false
+                setOnClickListener { runMacro(m) }
+                setOnLongClickListener { showMacroEditor(m); true }
+            }
+            row.addView(
+                b,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins((3 * d).toInt(), 0, (3 * d).toInt(), 0) }
+            )
+        }
+    }
+
+    /** Выполнение макроса: шаги по очереди с паузой (запуск приложения / клавиша) */
+    private fun runMacro(m: Macro) {
+        val r = remote
+        if (r == null || !r.isConnected()) {
+            toast("Сначала подключитесь к ТВ")
+            return
+        }
+        toast("Макрос: ${m.name}")
+        Thread {
+            appendLogUi("— макрос «${m.name}» —")
+            m.steps.forEachIndexed { i, s ->
+                appendLogUi(
+                    "макрос «${m.name}»: шаг ${i + 1}/${m.steps.size} — " +
+                        if (s.type == "app") "запуск ${s.name} (${s.id})" else s.key
+                )
+                try {
+                    if (s.type == "app") r.launchApp(s.id, s.name) else r.sendKey(s.key)
+                } catch (e: Exception) {
+                    appendLogUi("!! макрос: ${e.message}")
+                }
+                try {
+                    Thread.sleep(900)
+                } catch (_: InterruptedException) {
+                }
+            }
+            appendLogUi("✔ макрос «${m.name}» выполнен")
+        }.start()
+    }
+
+    /** appendLog из фонового потока — всегда через UI-поток */
+    private fun appendLogUi(line: String) {
+        runOnUiThread { appendLog(line) }
+    }
+
+    /** Список макросов: тап по пункту — выполнение */
+    private fun showMacrosDialog() {
+        val ms = loadMacros()
+        val items = if (ms.isEmpty())
+            arrayOf("(макросов нет — создайте первый)")
+        else
+            ms.map { "${it.name}  — ${it.steps.size} шаг(ов)" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Мои кнопки (макросы)")
+            .setMessage("Тап — выполнить. Редактирование/удаление — удержание кнопки макроса на главном экране.")
+            .setItems(items) { _, i -> if (ms.isNotEmpty()) runMacro(ms[i]) }
+            .setPositiveButton("Создать макрос…") { _, _ -> showMacroEditor(null) }
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    /** Редактор макроса: название + шаги («+ клавиша», «+ приложение»), удаление шага — удержание */
+    private fun showMacroEditor(existing: Macro?) {
+        val d = resources.displayMetrics.density
+        val steps = existing?.steps?.toMutableList() ?: mutableListOf()
+        val nameInput = EditText(this).apply {
+            hint = "Название кнопки, напр. «Вечерний Netflix»"
+            setText(existing?.name ?: "")
+        }
+        val stepsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        fun redraw() {
+            stepsBox.removeAllViews()
+            if (steps.isEmpty()) {
+                stepsBox.addView(TextView(this@MainActivity).apply {
+                    textSize = 12f
+                    text = "Шагов пока нет — добавьте приложение и/или клавиши"
+                })
+            }
+            steps.forEachIndexed { i, s ->
+                stepsBox.addView(TextView(this@MainActivity).apply {
+                    textSize = 13f
+                    setPadding(0, (2 * d).toInt(), 0, (2 * d).toInt())
+                    text = "${i + 1}. " + if (s.type == "app")
+                        "запуск: ${s.name} (${s.id})" else "клавиша: ${s.key}"
+                    setOnLongClickListener {
+                        steps.removeAt(i)
+                        redraw()
+                        true
+                    }
+                })
+            }
+        }
+        redraw()
+
+        val btnKey = Button(this).apply { text = "+ клавиша" }
+        val btnApp = Button(this).apply { text = "+ приложение" }
+        val btnRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(btnKey, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            addView(btnApp, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((14 * d).toInt(), (8 * d).toInt(), (14 * d).toInt(), 0)
+            addView(nameInput)
+            addView(stepsBox)
+            addView(btnRow)
+            addView(TextView(this@MainActivity).apply {
+                textSize = 11f
+                text = "Удалить шаг — долгое нажатие на него"
+            })
+        }
+
+        btnKey.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Клавиша для макроса")
+                .setItems(MACRO_KEYS) { _, k ->
+                    steps.add(MacroStep("key", "", "", MACRO_KEYS[k]))
+                    redraw()
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+        btnApp.setOnClickListener {
+            val saved = savedManualApps()
+            val names = saved.map { "${it.name} (${it.appId})" }.toMutableList()
+            names.add("Ввести ID вручную…")
+            AlertDialog.Builder(this)
+                .setTitle("Приложение для макроса")
+                .setItems(names.toTypedArray()) { _, i ->
+                    if (i < saved.size) {
+                        steps.add(MacroStep("app", saved[i].appId, saved[i].name, ""))
+                        redraw()
+                    } else {
+                        val inp = EditText(this).apply {
+                            hint = "ID или DIAL-имя, напр. 1112990019 или YouTube"
+                            inputType = InputType.TYPE_CLASS_TEXT
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle("ID или имя приложения")
+                            .setView(inp)
+                            .setPositiveButton("Добавить") { _, _ ->
+                                val v = inp.text.toString().trim()
+                                if (v.isNotEmpty()) {
+                                    steps.add(MacroStep("app", v, v, ""))
+                                    redraw()
+                                }
+                            }
+                            .setNegativeButton("Отмена", null)
+                            .show()
+                    }
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        }
+
+        val builder = AlertDialog.Builder(this)
+            .setTitle(if (existing == null) "Новый макрос" else "Макрос: ${existing.name}")
+            .setView(box)
+            .setPositiveButton("Сохранить") { _, _ ->
+                val nm = nameInput.text.toString().trim().ifEmpty { "Макрос" }
+                if (steps.isEmpty()) {
+                    toast("Макрос без шагов не сохранён")
+                    return@setPositiveButton
+                }
+                saveMacro(existing, Macro(nm, steps.toList()))
+            }
+            .setNegativeButton("Отмена", null)
+        if (existing != null) {
+            builder.setNeutralButton("Удалить") { _, _ ->
+                saveMacros(loadMacros().filter { it.name != existing.name })
+                renderMacrosRow()
+                toast("Макрос удалён")
+            }
+        }
+        builder.show()
     }
 
     /**

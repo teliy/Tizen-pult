@@ -52,7 +52,9 @@ class SamsungRemote(
     private val onApps: (List<AppInfo>, Boolean) -> Unit,   // список + признак «каталог» (не подтверждён ТВ)
     private val onLog: (String) -> Unit,
     private val onSmartAuth: ((String) -> Unit)? = null,
-    private val onPin: ((retry: Boolean, submit: (String?) -> Unit) -> Unit)? = null
+    private val onPin: ((retry: Boolean, submit: (String?) -> Unit) -> Unit)? = null,
+    /** v3.0: что сейчас на ТВ (канал/приложение) — пустая строка = скрыть */
+    private val onTvNow: ((String) -> Unit)? = null
 ) {
     data class AppInfo(val appId: String, val name: String)
 
@@ -145,6 +147,7 @@ class SamsungRemote(
                 onClosed = {
                     connected = false
                     transportAlive = false
+                    onTvNow?.invoke("")
                     onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
                 }
             )
@@ -166,6 +169,7 @@ class SamsungRemote(
                 onClosed = {
                     connected = false
                     transportAlive = false
+                    onTvNow?.invoke("")
                     onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
                 },
                 requestPin = { retry, submit -> onPin?.invoke(retry, submit) },
@@ -216,12 +220,14 @@ class SamsungRemote(
                 log("WS закрыт: code=$code")
                 connected = false
                 transportAlive = false
+                onTvNow?.invoke("")
                 onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 connected = false
                 transportAlive = false
+                onTvNow?.invoke("")
                 val reason = t.message ?: "нет соединения"
                 log("✖ Ошибка WS: $reason")
                 onStatus("Ошибка: $reason")
@@ -238,6 +244,8 @@ class SamsungRemote(
                     log("✔ Авторизация пройдена, токен получен (${t.take(3)}...) и сохранён")
                     onToken(t)
                 }
+                // v3.0: часть прошивок кладёт в connect текущий канал/приложение — покажем
+                emitTvChannel(obj.optJSONObject("data"))
                 // Проба полноценности сеанса для ws://8001: старые ТВ (Orsay 2014-2015)
                 // принимают подключение, но отклоняют ms.remote.control. Сразу шлём два
                 // API-запроса: если оба вернут ms.error — сеанс бесполезен, маркируем reject.
@@ -329,6 +337,9 @@ class SamsungRemote(
                     }
                 }
             }
+
+            // ТВ сообщает о смене канала — обновляем «На ТВ: …» (v3.0)
+            "ms.channel.channelChanged" -> emitTvChannel(obj.optJSONObject("data"))
 
             // ТВ включает/выключает touch-режим (браузер и приложения с курсором).
             // Это уведомление о состоянии: протокол мыши (ProcessMouseDevice) не меняется.
@@ -439,6 +450,28 @@ class SamsungRemote(
         }, quiet = true)
     }
 
+    /**
+     * Вытащить из payload-а ТВ информацию о текущем канале (если прошивка её кладёт)
+     * и показать в статусе «На ТВ: …». Формат недокументирован — парсим свободно:
+     * data.currentChannel / data.channel с полями channelName/major/chanNum.
+     */
+    private fun emitTvChannel(d: JSONObject?) {
+        if (d == null) return
+        val ch = d.optJSONObject("currentChannel") ?: d.optJSONObject("channel") ?: return
+        val name = ch.optString("channelName").ifBlank { ch.optString("name") }
+        val major = ch.optInt("major", 0)
+        val num = if (major > 0) major.toString()
+                  else ch.optString("major").ifBlank { ch.optString("chanNum") }
+        if (name.isBlank() && num.isBlank()) return
+        val label = when {
+            num.isNotBlank() && name.isNotBlank() -> "канал $num — $name"
+            num.isNotBlank() -> "канал $num"
+            else -> name
+        }
+        log("На ТВ: $label")
+        onTvNow?.invoke(label)
+    }
+
     /** Клик левой кнопкой мыши в текущей позиции курсора (тачпад, режим мыши) */
     fun sendMouseClick() {
         if (!supportsMouse()) return
@@ -447,6 +480,20 @@ class SamsungRemote(
             put("method", "ms.remote.control")
             put("params", JSONObject().apply {
                 put("Cmd", "LeftClick")
+                put("TypeOfRemote", "ProcessMouseDevice")
+            })
+        })
+    }
+
+    /** Клик правой кнопкой мыши в текущей позиции курсора (тачпад — удержание, v3.0).
+     *  Формат подтверждён samsungctl: Cmd=RightClick, TypeOfRemote=ProcessMouseDevice. */
+    fun sendMouseRightClick() {
+        if (!supportsMouse()) return
+        log("▶ мышь: RightClick в позиции курсора")
+        send(JSONObject().apply {
+            put("method", "ms.remote.control")
+            put("params", JSONObject().apply {
+                put("Cmd", "RightClick")
                 put("TypeOfRemote", "ProcessMouseDevice")
             })
         })
@@ -533,20 +580,27 @@ class SamsungRemote(
      * Запуск приложения по appId (111299001912 — YouTube, 11101200001 — Netflix).
      * Каскад: WS DEEP_LINK → WS NATIVE_LAUNCH → REST POST (http:8001, затем https:8002).
      * Подтверждение ТВ — ответное событие ed.apps.launch с кодом 200.
+     * v3.0: data — дополнительный payload для ed.apps.launch (например {url:…} для браузера).
      */
-    fun launchApp(appId: String, name: String? = null) {
+    fun launchApp(appId: String, name: String? = null, data: JSONObject? = null) {
         if (isLegacy() || isSmart()) {
             launchAppOrsay(appId, name)
             return
         }
         launchAck = false
-        sendLaunchWs(appId, "DEEP_LINK")
+        sendLaunchWs(appId, "DEEP_LINK", data)
         Thread {
-            if (awaitLaunchAck(3000)) return@Thread
+            if (awaitLaunchAck(3000)) {
+                if (data != null || name != null) onTvNow?.invoke(name ?: appId)
+                return@Thread
+            }
 
             log("ТВ не подтвердил DEEP_LINK — пробую NATIVE_LAUNCH")
-            sendLaunchWs(appId, "NATIVE_LAUNCH")
-            if (awaitLaunchAck(3000)) return@Thread
+            sendLaunchWs(appId, "NATIVE_LAUNCH", data)
+            if (awaitLaunchAck(3000)) {
+                if (data != null || name != null) onTvNow?.invoke(name ?: appId)
+                return@Thread
+            }
 
             log("WS-запуск не подтверждён — пробую REST POST (порт 8001, затем 8002)")
             val t = token
@@ -556,6 +610,7 @@ class SamsungRemote(
             }
             if (code in 200..299) {
                 log("✔ Приложение запущено (REST 8001, HTTP $code)")
+                onTvNow?.invoke(name ?: appId)
                 return@Thread
             }
             var code2 = restGet("https", 8002, "applications/$appId", "POST").first
@@ -564,13 +619,14 @@ class SamsungRemote(
             }
             if (code2 in 200..299) {
                 log("✔ Приложение запущено (REST 8002, HTTP $code2)")
+                onTvNow?.invoke(name ?: appId)
             } else {
                 log("REST не сработал: 8001=$code, 8002=$code2 — возможно, приложение не установлено или эндпоинта нет на этой прошивке")
             }
         }.start()
     }
 
-    private fun sendLaunchWs(appId: String, actionType: String) {
+    private fun sendLaunchWs(appId: String, actionType: String, data: JSONObject? = null) {
         send(JSONObject().apply {
             put("method", "ms.channel.emit")
             put("params", JSONObject().apply {
@@ -581,9 +637,108 @@ class SamsungRemote(
                     put("action_type", actionType)
                     put("appId", appId)
                     put("metaTag", "")
+                    // v3.0: дополнительный payload (url и т.п.) — дописываем к data
+                    if (data != null) {
+                        for (k in data.keys()) {
+                            data.opt(k)?.let { put(k, it) }
+                        }
+                    }
                 })
             })
         })
+    }
+
+    /**
+     * v3.0: WS-запуск приложения с payload-ом (без REST-фолбэка — запуск REST-ом
+     * потерял бы payload). Перебирает кандидатов appId: DEEP_LINK+data → NATIVE_LAUNCH+data.
+     * При полном неуспехе зовётся onFail (например, фолбэк на браузер для YouTube).
+     */
+    private fun launchWsAppWithPayload(
+        appIds: List<String>,
+        label: String,
+        data: JSONObject,
+        onFail: (() -> Unit)? = null
+    ) {
+        if (isLegacy() || isSmart()) {
+            log("Запуск «$label» недоступен по старому протоколу (только Tizen 2016+)")
+            onStatus("Это работает только на Tizen (2016+)")
+            return
+        }
+        launchAck = false
+        Thread {
+            for (id in appIds) {
+                sendLaunchWs(id, "DEEP_LINK", data)
+                if (awaitLaunchAck(2500)) {
+                    log("✔ ТВ подтвердил запуск — $label (id=$id, DEEP_LINK)")
+                    onTvNow?.invoke(label)
+                    return@Thread
+                }
+                sendLaunchWs(id, "NATIVE_LAUNCH", data)
+                if (awaitLaunchAck(2500)) {
+                    log("✔ ТВ подтвердил запуск — $label (id=$id, NATIVE_LAUNCH)")
+                    onTvNow?.invoke(label)
+                    return@Thread
+                }
+                log("ТВ не подтвердил запуск id=$id — пробую следующего кандидата")
+            }
+            if (onFail != null) {
+                log("Запуск приложения с payload не подтверждён — использую запасной путь")
+                onFail.invoke()
+            } else {
+                onStatus("ТВ не подтвердил запуск — подробности в журнале")
+            }
+        }.start()
+    }
+
+    /**
+     * v3.0: открыть ссылку в браузере ТВ (Tizen). Кандидаты — известные app-ID
+     * браузера разных поколений (org.tizen.browser на 2016+, числовые — старее/новее).
+     * payload {url:…} внутри ed.apps.launch — проверенный сообществом приём.
+     */
+    fun launchBrowserUrl(url: String) {
+        launchWsAppWithPayload(
+            listOf("org.tizen.browser", "3201907018784", "3202010022079", "3201512001"),
+            "Браузер: $url",
+            JSONObject().put("url", url)
+        )
+    }
+
+    /**
+     * v3.0 (эксперимент): YouTube-видео сразу в ТВ-приложение YouTube (9Ur5IyzjvP —
+     * ID на прошивках 2017+). Приём — Cobalt deep link: payload
+     * {COBALT_LAUNCH_TYPE:"url", url:"https://www.youtube.com/tv?v=ID"};
+     * если прошивка не подтвердила — фолбэк: та же ссылка в браузере ТВ.
+     * Не ссылка и не ID → это тоже браузер.
+     */
+    fun launchYouTubeVideo(raw: String) {
+        val id = extractYouTubeId(raw)
+        if (id == null) {
+            log("Не похоже на ссылку/ID YouTube — открываю в браузере ТВ")
+            launchBrowserUrl(raw)
+            return
+        }
+        val tvUrl = "https://www.youtube.com/tv?v=$id"
+        launchWsAppWithPayload(
+            listOf("9Ur5IyzjvP"),
+            "YouTube: $id",
+            JSONObject().put("COBALT_LAUNCH_TYPE", "url").put("url", tvUrl)
+        ) {
+            launchBrowserUrl(tvUrl)
+        }
+    }
+
+    private fun extractYouTubeId(raw: String): String? {
+        val s = raw.trim()
+        for (p in listOf(
+            Regex("youtu\\.be/([A-Za-z0-9_-]{6,20})"),
+            Regex("[?&]v=([A-Za-z0-9_-]{6,20})"),
+            Regex("shorts/([A-Za-z0-9_-]{6,20})"),
+            Regex("embed/([A-Za-z0-9_-]{6,20})")
+        )) {
+            p.find(s)?.let { return it.groupValues[1] }
+        }
+        if (Regex("^[A-Za-z0-9_-]{6,20}$").matches(s) && !s.contains('.')) return s
+        return null
     }
 
     private fun awaitLaunchAck(timeoutMs: Long): Boolean {
@@ -874,6 +1029,7 @@ class SamsungRemote(
             }
             if (code in 200..299) {
                 log("✔ Приложение запущено (HTTP $code)${if (body.isNotBlank()) " :: " + body.take(120).replace('\n', ' ') else ""}")
+                onTvNow?.invoke(name ?: appId)
                 onStatus("Приложение запускается…")
             } else {
                 log("✖ Запуск не удался (HTTP $code) — приложение не установлено или ID не подходит этой прошивке")
