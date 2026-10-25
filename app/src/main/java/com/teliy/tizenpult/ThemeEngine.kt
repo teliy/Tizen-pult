@@ -124,6 +124,18 @@ object ThemeEngine {
         styleButton(b, current(prefs))
     }
 
+    /**
+     * Акцентный цвет темы — для рамок/выделений, рисуемых кодом
+     * (например, обводка блоков в режиме расстановки пульта).
+     */
+    fun accent(prefs: SharedPreferences): Int = when (current(prefs)) {
+        GLASS -> 0xFF5B6CF0.toInt()
+        GLASS_DARK -> 0xFF8C9BFF.toInt()
+        NEU -> 0xFF576078.toInt()
+        NEU_DARK -> 0xFFA7B0FF.toInt()
+        else -> 0xFF0B7A75.toInt() // базовая — фирменный бирюзовый
+    }
+
     // ---------- обход дерева ----------
 
     private fun walk(v: View, theme: String) {
