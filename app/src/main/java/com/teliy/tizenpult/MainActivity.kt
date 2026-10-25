@@ -7,26 +7,19 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Typeface
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
-import android.widget.AdapterView
-import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -39,7 +32,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: SharedPreferences
     private var remote: SamsungRemote? = null
 
-    private lateinit var ipInput: EditText
     private lateinit var statusView: TextView
     private lateinit var tvNowView: TextView
 
@@ -47,71 +39,41 @@ class MainActivity : AppCompatActivity() {
     private var logDialogText: TextView? = null
     private var logDialogScroll: ScrollView? = null
 
-    /** APK, ожидающий установки после выдачи разрешения «неизвестные приложения» */
-    private var pendingInstall: File? = null
-
-    /** ТВ, найденные во время прошлых поисков (хранится в настройках) */
-    private data class KnownTv(
-        val ip: String,
-        val name: String,
-        val model: String,
-        val lastSeen: Long,
-        val legacy: Boolean = false
-    )
-
-    // ---------- Выбор ТВ сверху ----------
-
-    /** Строка выпадающего списка телевизоров */
-    private data class TvOption(val label: String, val ip: String)
-
-    private lateinit var tvSpinner: Spinner
-    private var tvOptions: List<TvOption> = emptyList()
-    private var suppressSpin = false
-
     /** Идет ли сейчас подключение (защита от двойных тапов) */
     @Volatile private var connecting = false
 
+    /** v3.1: тема, применённая при создании экрана (смена в настройках → recreate) */
+    private var appliedTheme = ""
+
+    /** v3.1: хост последнего подключения (смена ТВ в настройках → переподключение) */
+    private var lastHostApplied: String? = null
+
+    /** v3.1: первый onResume уже прошёл (автопоиск в onCreate сам подключается) */
+    private var startedOnce = false
+
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
+        // v3.1: тема применяется до super.onCreate/setContentView
+        prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
+        appliedTheme = ThemeEngine.current(prefs)
+        ThemeEngine.applyTheme(this, prefs)
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        ThemeEngine.styleRoot(this)
 
-        prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
-        ipInput = findViewById(R.id.ipInput)
         statusView = findViewById(R.id.statusView)
         tvNowView = findViewById(R.id.tvNowView)
 
-        ipInput.setText(prefs.getString("host", ""))
-
-        // Выпадающий список телевизоров в верхней строке
-        tvSpinner = findViewById(R.id.tvSpinner)
-        tvSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
-                if (suppressSpin) return
-                val opt = tvOptions.getOrNull(pos) ?: return
-                if (opt.ip.isEmpty()) {
-                    // Пункт-подсказка «ТВ не найден — нажмите Найти» — запускаем поиск
-                    findTv(manual = true)
-                    return
-                }
-                prefs.edit().putString("host", opt.ip).apply()
-                ipInput.setText(opt.ip)
-                renderMacrosRow() // у нового ТВ — свои макросы
-                connectToHost(opt.ip)
-            }
-
-            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        // v3.1: настройки — поиск/выбор ТВ, темы оформления, MAC, обновления
+        findViewById<Button>(R.id.btnSettings).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
         }
-
-        findViewById<Button>(R.id.btnConnect).setOnClickListener { connectManual() }
-        findViewById<Button>(R.id.btnFind).setOnClickListener { findTv(manual = true) }
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
         findViewById<Button>(R.id.btnUrl).setOnClickListener { showUrlDialog() }
         findViewById<Button>(R.id.btnMacros).setOnClickListener { showMacrosDialog() }
         findViewById<Button>(R.id.btnTouchpad).setOnClickListener { showTouchpad() }
         findViewById<Button>(R.id.btnLog).setOnClickListener { openLogDialog() }
-        findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
         findViewById<TextView>(R.id.versionView).text = "Версия ${currentVersionName()}"
 
         val btnPowerOn = findViewById<Button>(R.id.btnPowerOn)
@@ -122,19 +84,25 @@ class MainActivity : AppCompatActivity() {
             true
         }
 
-        // Автопоиск ТВ и подключение при запуске приложения
-        refreshTvSpinner(prefs.getString("host", null))
         renderMacrosRow() // макросы per-ТВ — кнопки на главном экране
-        findTv(manual = false)
+        findTv(manual = false) // автопоиск ТВ и подключение при запуске
     }
 
     override fun onResume() {
         super.onResume()
-        // Возврат из настроек «установка неизвестных приложений» — продолжаем установку
-        val f = pendingInstall ?: return
-        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) return
-        pendingInstall = null
-        if (f.exists()) startInstall(f)
+        // v3.1: тема сменилась в настройках — пересобираем экран пульта
+        val theme = ThemeEngine.current(prefs)
+        if (theme != appliedTheme) {
+            appliedTheme = theme
+            recreate()
+            return
+        }
+        // v3.1: ТВ сменился в настройках — подключаемся к новому при возврате
+        val host = prefs.getString("host", null)
+        if (startedOnce && !host.isNullOrBlank() && host != lastHostApplied) {
+            connectToHost(host)
+        }
+        startedOnce = true
     }
 
     /** Кнопки с андроид:tag="KEY_..." в разметке обрабатываются здесь */
@@ -168,23 +136,13 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun connectManual() {
-        val host = ipInput.text.toString().trim()
-        if (host.isEmpty()) {
-            toast("Введите IP или нажмите «Найти ТВ»")
-            return
-        }
-        prefs.edit().putString("host", host).apply()
-        renderMacrosRow()
-        connectToHost(host)
-    }
-
     /**
      * Автопоиск ТВ: сохранённый IP + прошлые находки + SSDP + скан всех подсетей.
-     * Если найдено несколько ТВ — показываем список; если ни одного и известен MAC —
-     * пробуждение по сети и повторная проверка.
+     * Найденное попадает в общую историю (TvStore) и в список на экране «Настройки».
+     * Один найденный (или сохранённый среди найденных) ТВ подключается сразу;
+     * если найдено несколько и сохранённого среди них нет — выбор в «Настройках».
+     * Если ни одного и известен MAC — пробуждение по сети и повторная проверка.
      * Каждый этап пишется в журнал — по нему можно понять, почему ТВ не нашёлся.
-     * Вызывается при старте приложения и по кнопке «Найти ТВ».
      */
     private fun findTv(manual: Boolean) {
         statusView.text = if (manual) "Поиск ТВ в сети…" else "Автопоиск ТВ при запуске…"
@@ -192,7 +150,7 @@ class MainActivity : AppCompatActivity() {
             var report = TvDiscovery.discoverAll(
                 applicationContext,
                 prefs.getString("host", null),
-                loadKnown().map { it.ip }
+                TvStore.load(prefs).map { it.ip }
             ) { p ->
                 runOnUiThread { statusView.text = "🔎 $p" }
             }
@@ -223,93 +181,27 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            rememberFound(report.found)
+            TvStore.rememberFound(prefs, report.found)
 
             runOnUiThread {
+                val saved = prefs.getString("host", null)
                 when {
+                    report.found.isEmpty() ->
+                        statusView.text =
+                            "ТВ не найден. Включите ТВ, проверьте Wi-Fi или добавьте ТВ в ⚙ Настройках"
+                    report.found.any { it.ip == saved } ->
+                        connectToHost(saved!!)
                     report.found.size == 1 -> {
                         val tv = report.found[0]
                         prefs.edit().putString("host", tv.ip).apply()
-                        ipInput.setText(tv.ip)
-                        refreshTvSpinner(tv.ip)
                         connectToHost(tv.ip)
                     }
-                    report.found.size > 1 -> {
-                        statusView.text = "Найдено ТВ: ${report.found.size} — выберите в списке сверху"
-                        refreshTvSpinner(prefs.getString("host", null))
-                    }
-                    else -> {
-                        statusView.text = "ТВ не найден. Включите ТВ, проверьте Wi-Fi или введите IP вручную"
-                        refreshTvSpinner(prefs.getString("host", null))
-                    }
+                    else ->
+                        statusView.text =
+                            "Найдено ТВ: ${report.found.size} — выберите в ⚙ Настройках"
                 }
             }
         }.start()
-    }
-
-    /** Сохраняем найденные сейчас ТВ в историю (показываются, даже когда выключены) */
-    private fun rememberFound(found: List<TvDiscovery.Result>) {
-        if (found.isEmpty()) return
-        val now = System.currentTimeMillis()
-        val hist = loadKnown()
-        for (r in found) {
-            hist.removeAll { it.ip == r.ip }
-            hist.add(0, KnownTv(r.ip, r.name, r.model, now, r.legacy))
-        }
-        saveKnown(hist.distinctBy { it.ip }.take(20))
-    }
-
-    private fun loadKnown(): MutableList<KnownTv> = try {
-        val arr = JSONArray(prefs.getString("knownTvs", "[]") ?: "[]")
-        (0 until arr.length()).map {
-            val x = arr.getJSONObject(it)
-            KnownTv(x.getString("ip"), x.optString("name"), x.optString("model"), x.optLong("lastSeen"), x.optBoolean("legacy"))
-        }.toMutableList()
-    } catch (_: Exception) {
-        mutableListOf()
-    }
-
-    private fun saveKnown(list: List<KnownTv>) {
-        val arr = JSONArray()
-        for (k in list) {
-            arr.put(JSONObject().apply {
-                put("ip", k.ip)
-                put("name", k.name)
-                put("model", k.model)
-                put("lastSeen", k.lastSeen)
-                put("legacy", k.legacy)
-            })
-        }
-        prefs.edit().putString("knownTvs", arr.toString()).apply()
-    }
-
-    /**
-     * Пересобирает выпадающий список ТВ сверху: все найденные/сохранённые ТВ —
-     * и Tizen, и старые (2011–2015) — со всеми подключаемы по своему протоколу.
-     */
-    private fun refreshTvSpinner(selectIp: String? = null) {
-        val opts = mutableListOf<TvOption>()
-        val seen = mutableSetOf<String>()
-        for (k in loadKnown()) {
-            if (seen.add(k.ip)) {
-                val mark = if (selectIp == k.ip) "▸ " else ""
-                val old = if (k.legacy) " — старый протокол" else ""
-                opts.add(TvOption("$mark${k.name} — ${k.model.ifBlank { "Samsung" }} — ${k.ip}$old", k.ip))
-            }
-        }
-        if (opts.isEmpty()) {
-            opts.add(TvOption("ТВ не найден — нажмите «Найти»", ""))
-        }
-        tvOptions = opts
-
-        suppressSpin = true
-        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, opts.map { it.label })
-        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-        tvSpinner.adapter = adapter
-        val sel = opts.indexOfFirst { it.ip == selectIp }
-        if (sel >= 0) tvSpinner.setSelection(sel)
-        // onItemSelected приходит после отрисовки — снимаем блокировку позже
-        tvSpinner.post { suppressSpin = false }
     }
 
     /**
@@ -329,6 +221,7 @@ class MainActivity : AppCompatActivity() {
             return
         }
         connecting = true
+        lastHostApplied = host // v3.1: onResume после настроек не переподключается зря
         Thread {
             try {
                 runOnUiThread {
@@ -565,124 +458,12 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    // ---------- Обновление приложения ----------
+    // ---------- Версия приложения (обновления — в «Настройках») ----------
 
     private fun currentVersionName(): String = try {
         packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
     } catch (_: Exception) {
         "?"
-    }
-
-    /** Кнопка «Проверить обновления»: GitHub API → сравнение версий → диалог */
-    private fun checkUpdate() {
-        statusView.text = "Проверка обновлений…"
-        Thread {
-            try {
-                val rel = UpdateChecker.fetchLatest()
-                val cur = currentVersionName()
-                if (!UpdateChecker.isNewer(rel.version, cur)) {
-                    runOnUiThread {
-                        statusView.text = "Обновлений нет"
-                        AlertDialog.Builder(this)
-                            .setTitle("У вас актуальная версия")
-                            .setMessage("Установлена версия $cur.\nПоследний релиз на GitHub: ${rel.tag}.")
-                            .setPositiveButton("OK", null)
-                            .show()
-                    }
-                    return@Thread
-                }
-                if (rel.apkUrl.isNullOrBlank()) {
-                    runOnUiThread {
-                        statusView.text = "В релизе ${rel.tag} нет APK-файла"
-                        toast("В релизе ${rel.tag} нет APK-файла")
-                    }
-                    return@Thread
-                }
-                val url = rel.apkUrl
-                val mb = rel.apkSize / 1048576f
-                runOnUiThread {
-                    AlertDialog.Builder(this)
-                        .setTitle("Доступно обновление ${rel.version}")
-                        .setMessage(
-                            "Установлена версия $cur.\n" +
-                            "Новая версия: ${rel.version} (${String.format(Locale.getDefault(), "%.1f", mb)} МБ).\n\n" +
-                            "Скачать с GitHub и установить?"
-                        )
-                        .setPositiveButton("Скачать и установить") { _, _ -> downloadAndInstall(url, rel.version) }
-                        .setNegativeButton("Позже", null)
-                        .show()
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    statusView.text = "Ошибка проверки обновлений"
-                    AlertDialog.Builder(this)
-                        .setTitle("Не удалось проверить обновления")
-                        .setMessage("${e.message}\n\nПроверьте интернет и попробуйте ещё раз.")
-                        .setPositiveButton("OK", null)
-                        .show()
-                }
-            }
-        }.start()
-    }
-
-    /** Скачивание APK в папку приложения с прогрессом в строке статуса */
-    private fun downloadAndInstall(url: String, version: String) {
-        statusView.text = "Скачивание v$version…"
-        Thread {
-            try {
-                val dest = File(getExternalFilesDir(null), "update-$version.apk")
-                UpdateChecker.download(url, dest) { done, total ->
-                    val mb = 1048576f
-                    val txt = if (total > 0)
-                        String.format(Locale.getDefault(), "Скачивание v%s: %.1f / %.1f МБ", version, done / mb, total / mb)
-                    else
-                        String.format(Locale.getDefault(), "Скачивание v%s: %.1f МБ", version, done / mb)
-                    runOnUiThread { statusView.text = txt }
-                }
-                pendingInstall = dest
-                runOnUiThread {
-                    statusView.text = "Скачано ${dest.name} — запускаю установку"
-                    startInstall(dest)
-                }
-            } catch (e: Exception) {
-                runOnUiThread {
-                    statusView.text = "Ошибка скачивания: ${e.message}"
-                    toast("Ошибка скачивания: ${e.message}")
-                }
-            }
-        }.start()
-    }
-
-    /** Запуск системного установщика APK через FileProvider */
-    private fun startInstall(apk: File) {
-        // Android 8+: требуется разрешение «устанавливать неизвестные приложения».
-        // После возврата из настроек установка продолжится в onResume().
-        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
-            pendingInstall = apk
-            toast("Разрешите установку для Tizen-Пульт в открывшихся настройках")
-            try {
-                startActivity(
-                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
-                )
-            } catch (_: Exception) {
-                try {
-                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES))
-                } catch (e: Exception) {
-                    toast("Откройте: Настройки → Приложения → Tizen-Пульт → Устанавливать неизвестные приложения")
-                }
-            }
-            return
-        }
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, "application/vnd.android.package-archive")
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        try {
-            startActivity(intent)
-        } catch (e: Exception) {
-            toast("Не удалось запустить установщик: ${e.message}")
-        }
     }
 
     private fun showApps(apps: List<SamsungRemote.AppInfo>, catalog: Boolean = false) {
@@ -721,9 +502,9 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** IP текущего ТВ (как его пишет кнопка «Подключ.» в prefs «host») */
+    /** IP текущего ТВ (выбирается на экране «Настройки», prefs «host») */
     private fun currentTvHost(): String {
-        return prefs.getString("host", null) ?: ipInput.text.toString().trim()
+        return prefs.getString("host", null) ?: ""
     }
 
     /** Свои запомненные приложения текущего ТВ (prefs «myapps:<ip>», JSON-массив) */
@@ -941,6 +722,7 @@ class MainActivity : AppCompatActivity() {
                 setOnClickListener { runMacro(m) }
                 setOnLongClickListener { showMacroEditor(m); true }
             }
+            ThemeEngine.styleDynamicButton(b, prefs) // v3.1: кнопки создаются кодом — стилизуем под тему
             row.addView(
                 b,
                 LinearLayout.LayoutParams(
@@ -1126,9 +908,9 @@ class MainActivity : AppCompatActivity() {
      *  - ТВ недоступен → Wake-on-LAN и автоматическое переподключение.
      */
     private fun pressPower() {
-        val host = prefs.getString("host", null) ?: ipInput.text.toString().trim()
-        if (host.isEmpty()) {
-            toast("Сначала выберите или найдите ТВ")
+        val host = prefs.getString("host", null)
+        if (host.isNullOrBlank()) {
+            toast("Сначала выберите или найдите ТВ в ⚙ Настройках")
             return
         }
         val r = remote
@@ -1264,7 +1046,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(0xFF9FE89F.toInt())
             setBackgroundColor(0xFF111111.toInt())
             setPadding((8 * d).toInt(), (8 * d).toInt(), (8 * d).toInt(), (8 * d).toInt())
-            text = logLines.joinToString("\n").ifBlank { "(пусто — нажмите «Подключ.»)" }
+            text = logLines.joinToString("\n").ifBlank { "(пусто — подключитесь к ТВ)" }
         }
         scroll.addView(tv)
         container.addView(

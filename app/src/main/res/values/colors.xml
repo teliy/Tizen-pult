@@ -2,4 +2,14 @@
 <resources>
     <color name="primary">#0B7A75</color>
     <color name="primary_dark">#075550</color>
+
+    <!-- v3.1: палитры тем -->
+    <color name="glass_status">#E7EEFF</color>
+    <color name="glass_accent">#5B6CF0</color>
+    <color name="glass_text">#FF232749</color>
+    <color name="glass_hint">#FF7A80A8</color>
+    <color name="neu_status">#E8EBF2</color>
+    <color name="neu_accent">#576078</color>
+    <color name="neu_text">#FF454B60</color>
+    <color name="neu_hint">#FF9AA0B4</color>
 </resources>

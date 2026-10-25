@@ -25,6 +25,13 @@
             </intent-filter>
         </activity>
 
+        <!-- v3.1: экран настроек — поиск/выбор ТВ, темы оформления, MAC, обновления -->
+        <activity
+            android:name=".SettingsActivity"
+            android:label="Настройки"
+            android:parentActivityName=".MainActivity"
+            android:screenOrientation="portrait" />
+
         <!-- Доступ установщика к скачанному APK во внутренней папке приложения -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -10,32 +10,12 @@
         android:orientation="vertical"
         android:padding="12dp">
 
-        <!-- Выбор телевизора (всегда сверху) -->
-        <LinearLayout
+        <!-- v3.1: настройки — поиск/выбор ТВ, темы оформления, MAC, обновления -->
+        <Button
+            android:id="@+id/btnSettings"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:paddingEnd="6dp"
-                android:text="ТВ:"
-                android:textStyle="bold" />
-
-            <Spinner
-                android:id="@+id/tvSpinner"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1" />
-
-            <Button
-                android:id="@+id/btnFind"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Найти" />
-        </LinearLayout>
+            android:text="⚙ Настройки (ТВ, поиск, темы)" />
 
         <TextView
             android:id="@+id/statusView"
@@ -58,27 +38,7 @@
             android:visibility="gone"
             android:text="На ТВ:" />
 
-        <!-- IP вручную (когда ТВ не нашёлся поиском) -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal">
-
-            <EditText
-                android:id="@+id/ipInput"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:hint="IP вручную (напр. 192.168.1.225)"
-                android:inputType="text"
-                android:maxLines="1" />
-
-            <Button
-                android:id="@+id/btnConnect"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:text="Подключ." />
-        </LinearLayout>
+        <!-- IP текущего ТВ и состояние подключения — только в статусе и в ⚙ Настройках -->
 
         <!-- Приложения -->
         <Button
@@ -521,21 +481,13 @@
             android:layout_marginTop="4dp"
             android:text="Журнал связи с ТВ (лог)" />
 
-        <!-- Проверка обновлений: GitHub Releases -> скачивание -> установка -->
-        <Button
-            android:id="@+id/btnUpdate"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:text="Проверить обновления приложения" />
-
         <TextView
             android:id="@+id/versionView"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:gravity="center"
             android:paddingTop="2dp"
-            android:text="Версия 3.0"
+            android:text="Версия 3.1"
             android:textSize="12sp" />
 
     </LinearLayout>

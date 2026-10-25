@@ -1,6 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Базовая тема (v3.1 «Базовый»): как было — Material 3, свет/тьма по системе -->
     <style name="Theme.TizenPult" parent="Theme.Material3.DayNight">
         <item name="colorPrimary">@color/primary</item>
+    </style>
+
+    <!-- v3.1: Glassmorphism (светлая) — пастельный градиент-фон, стеклянные панели рисует ThemeEngine -->
+    <style name="Theme_TizenPult_Glass" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/glass_window_bg</item>
+        <item name="android:statusBarColor">@color/glass_status</item>
+        <item name="android:navigationBarColor">@color/glass_status</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="colorAccent">@color/glass_accent</item>
+        <item name="colorPrimary">@color/glass_accent</item>
+        <item name="android:textColorPrimary">@color/glass_text</item>
+        <item name="android:textColorSecondary">@color/glass_hint</item>
+        <item name="android:textColorHint">@color/glass_hint</item>
+    </style>
+
+    <!-- v3.1: Неоморфизм (светлый) — серо-голубой фон, мягкие панели рисует ThemeEngine -->
+    <style name="Theme_TizenPult_Neu" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowBackground">@drawable/neu_window_bg</item>
+        <item name="android:statusBarColor">@color/neu_status</item>
+        <item name="android:navigationBarColor">@color/neu_status</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="colorAccent">@color/neu_accent</item>
+        <item name="colorPrimary">@color/neu_accent</item>
+        <item name="android:textColorPrimary">@color/neu_text</item>
+        <item name="android:textColorSecondary">@color/neu_hint</item>
+        <item name="android:textColorHint">@color/neu_hint</item>
     </style>
 </resources>

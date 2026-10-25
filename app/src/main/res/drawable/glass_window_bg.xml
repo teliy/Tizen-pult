@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v3.1: фон экрана Glassmorphism — пастельная диагональ + мягкие цветовые пятна -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:angle="315"
+                android:centerColor="#FFF7ECF6"
+                android:endColor="#FFE6F8EF"
+                android:startColor="#FFE7EEFF"
+                android:type="linear" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerX="0.15"
+                android:centerY="0.06"
+                android:endColor="#00B9C6FF"
+                android:gradientRadius="380dp"
+                android:startColor="#61B9C6FF"
+                android:type="radial" />
+        </shape>
+    </item>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:centerX="0.88"
+                android:centerY="0.94"
+                android:endColor="#00FFCFE3"
+                android:gradientRadius="430dp"
+                android:startColor="#61FFCFE3"
+                android:type="radial" />
+        </shape>
+    </item>
+</layer-list>
