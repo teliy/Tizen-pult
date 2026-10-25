@@ -40,6 +40,13 @@ class SamsungRemote(
     data class AppInfo(val appId: String, val name: String)
 
     private var ws: WebSocket? = null
+
+    // Состояние сеанса (читаются/пишутся из фоновых потоков)
+    @Volatile private var launchAck = false         // ТВ подтвердил ed.apps.launch
+    @Volatile private var appsReceived = false      // ТВ прислал список приложений
+    @Volatile private var imeSeen = false           // клавиатура на ТВ открывалась в сеансе
+    @Volatile private var textBroadcastSent = false // broadcast textReceived — 1 раз за сеанс
+
     private val client: OkHttpClient = unsafeClient()
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
@@ -58,6 +65,11 @@ class SamsungRemote(
         var url = "wss://$host:8002/api/v2/channels/samsung.remote.control?name=$name"
         val withToken = !token.isNullOrBlank()
         if (withToken) url += "&token=$token"
+
+        launchAck = false
+        appsReceived = false
+        imeSeen = false
+        textBroadcastSent = false
 
         log(if (withToken) "Подключение к wss://$host:8002 (с сохранённым токеном)" else "Подключение к wss://$host:8002 (без токена — ТВ покажет запрос)")
 
@@ -112,9 +124,29 @@ class SamsungRemote(
             }
 
             "ed.installedApp.get", "ed.edenAppList.get" -> {
+                appsReceived = true
                 val apps = parseApps(obj)
                 log("Список приложений: ${apps.size} шт.")
                 if (apps.isNotEmpty()) onApps(apps)
+            }
+
+            "ed.apps.launch" -> {
+                val code = obj.optInt("data", -1)
+                launchAck = true
+                log(if (code == 200) "✔ ТВ подтвердил запуск приложения (код 200)" else "ТВ ответил на запуск приложения: $code")
+            }
+
+            // ТВ сообщает об открытии/закрытии экранной клавиатуры:
+            // текст принимается только пока клавиатура открыта (поле ввода в фокусе)
+            "ms.remote.imeStart" -> {
+                imeSeen = true
+                log("⌨ ТВ: клавиатура открыта — теперь текст можно отправлять")
+            }
+            "ms.remote.imeEnd" -> log("ТВ: клавиатура закрыта — текст больше не принимается")
+
+            "ms.error" -> {
+                val msg = obj.optJSONObject("data")?.optString("message")
+                log("!! ТВ сообщил об ошибке: ${msg ?: obj.toString().take(200)}")
             }
 
             else -> log("событие: ${obj.optString("event")}")
@@ -124,9 +156,17 @@ class SamsungRemote(
     private fun parseApps(obj: JSONObject): List<AppInfo> {
         val result = mutableListOf<AppInfo>()
         var arr: JSONArray? = null
+        // Формат ответа ТВ (эталон parse_installed_app):
+        // {"event":"ed.installedApp.get","from":"host","data":{"data":[{appId,name},...]}}
         try {
-            arr = obj.getJSONObject("params").getJSONArray("data")
+            arr = obj.getJSONObject("data").getJSONArray("data")
         } catch (_: Exception) {
+        }
+        if (arr == null) {
+            try {
+                arr = obj.getJSONObject("params").getJSONArray("data")
+            } catch (_: Exception) {
+            }
         }
         if (arr == null) {
             try {
@@ -171,100 +211,115 @@ class SamsungRemote(
     }
 
     /**
-     * Умный ввод текста: сначала REST IME API (официальный путь для ТВ 2021+, где
-     * WS-текст отключён), при неудаче — WS-форматы в фоновом потоке.
+     * Ввод текста — эталонная WS-последовательность (samsung-tv-ws-api send_text/end_text):
+     * 1) broadcast custom.remote.textReceived — один раз за сеанс,
+     * 2) SendInputString {Cmd=base64(текст), DataOfCmd="base64"},
+     * 3) SendInputEnd — завершает сеанс ввода (без него часть прошивок не показывает текст).
+     *
+     * ВАЖНО: ТВ принимает текст только пока открыта экранная клавиатура (поле ввода в
+     * фокусе). Открытие/закрытие видно в журнале: ⌨ ms.remote.imeStart / ms.remote.imeEnd.
      */
     fun sendTextSmart(text: String) {
         if (text.isEmpty()) return
         Thread {
-            val ok = sendTextIme(text)
-            if (!ok) {
-                log("IME недоступен — отправляю WS-форматы (ТВ 2016–2019)")
-                sendTextWs(text)
+            val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+
+            if (!textBroadcastSent) {
+                send(JSONObject().apply {
+                    put("method", "ms.channel.emit")
+                    put("params", JSONObject().apply {
+                        put("event", "custom.remote.textReceived")
+                        put("to", "broadcast")
+                    })
+                })
+                textBroadcastSent = true
+            }
+
+            send(JSONObject().apply {
+                put("method", "ms.remote.control")
+                put("params", JSONObject().apply {
+                    put("Cmd", b64)
+                    put("DataOfCmd", "base64")
+                    put("TypeOfRemote", "SendInputString")
+                })
+            })
+
+            send(JSONObject().apply {
+                put("method", "ms.remote.control")
+                put("params", JSONObject().apply {
+                    put("TypeOfRemote", "SendInputEnd")
+                })
+            })
+
+            if (!imeSeen) {
+                log("Подсказка: ТВ не сообщал об открытой клавиатуре в этом сеансе. " +
+                    "Откройте поле ввода на ТВ (поиск YouTube и т.п.), дождитесь ⌨ в журнале и повторите")
             }
         }.start()
     }
 
     /**
-     * Ввод текста через REST IME API: POST http://IP:8001/api/v2/remoteControl/imeInput/{base64}?token={ws-токен}
-     * Токен — тот же, что получен после «Разрешить» на экране ТВ (используется библиотекой
-     * samsung-tv-ws-api для паролей на ТВ 2021+). true = ТВ принял текст (HTTP 200).
+     * Запуск приложения по appId (11101200001 — YouTube, org.tizen.netflixapp — Netflix).
+     * На прошивках 2021 (Tizen 5.5/6.0) запуск по WS часто молча игнорируется, поэтому
+     * каскад: WS DEEP_LINK → WS NATIVE_LAUNCH → REST POST /api/v2/applications/{appId}.
+     * Подтверждение ТВ — ответное событие ed.apps.launch с кодом 200.
      */
-    private fun sendTextIme(text: String): Boolean {
-        val t = token
-        if (t.isNullOrBlank()) {
-            log("IME: нет сохранённого токена — нажмите «Подключ.» и «Разрешить» на ТВ")
-            return false
-        }
-        return try {
-            val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-            val conn = URL("http://$host:8001/api/v2/remoteControl/imeInput/$b64?token=$t")
-                .openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.connectTimeout = 4000
-            conn.readTimeout = 4000
-            val code = conn.responseCode
-            conn.disconnect()
-            log(if (code == 200) "✔ Текст доставлен (IME API, HTTP $code)" else "IME API ответил HTTP $code")
-            code == 200
-        } catch (e: Exception) {
-            log("!! IME ошибка: ${e.message}")
-            false
-        }
+    fun launchApp(appId: String) {
+        launchAck = false
+        sendLaunchWs(appId, "DEEP_LINK")
+        Thread {
+            if (awaitLaunchAck(3000)) return@Thread
+
+            log("ТВ не подтвердил DEEP_LINK — пробую NATIVE_LAUNCH")
+            sendLaunchWs(appId, "NATIVE_LAUNCH")
+            if (awaitLaunchAck(3000)) return@Thread
+
+            log("WS-запуск игнорируется прошивкой 2021 — пробую REST POST /api/v2/applications/$appId")
+            val t = token
+            var code = restRequest("applications/$appId", "POST")
+            if (code == 401 && !t.isNullOrBlank()) {
+                code = restRequest("applications/$appId?token=$t", "POST")
+            }
+            if (code in 200..299) {
+                log("✔ Приложение запущено через REST API (HTTP $code)")
+            } else {
+                log("REST-запуск ответил HTTP $code — приложение может отсутствовать или ТВ не отвечает")
+            }
+        }.start()
     }
 
-    /** Ввод текста по WebSocket: новый формат ТВ 2021+ и legacy для 2016–2019 */
-    private fun sendTextWs(text: String) {
-        if (text.isEmpty()) return
-        val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-
-        // 1) Broadcast «текст принят к обработке» — обязательный на ТВ 2021+
-        send(JSONObject().apply {
-            put("method", "ms.channel.emit")
-            put("params", JSONObject().apply {
-                put("event", "custom.remote.textReceived")
-                put("to", "broadcast")
-            })
-        })
-
-        // 2) Новый формат SendInputString (ТВ 2021+)
-        send(JSONObject().apply {
-            put("method", "ms.remote.control")
-            put("params", JSONObject().apply {
-                put("Cmd", b64)
-                put("DataOfCmd", "base64")
-                put("TypeOfRemote", "SendInputString")
-            })
-        })
-
-        // 3) Legacy-формат (ТВ 2016–2019)
-        send(JSONObject().apply {
-            put("method", "ms.remote.control")
-            put("params", JSONObject().apply {
-                put("Cmd", "SendInput")
-                put("DataOfCmd", b64)
-                put("TypeOfRemote", "SendInput")
-            })
-        })
-    }
-
-    /** Запуск приложения по appId (например 11101200001 — YouTube) */
-    fun launchApp(appId: String, actionType: String = "NATIVE_LAUNCH") {
+    private fun sendLaunchWs(appId: String, actionType: String) {
         send(JSONObject().apply {
             put("method", "ms.channel.emit")
             put("params", JSONObject().apply {
                 put("event", "ed.apps.launch")
                 put("to", "host")
                 put("data", JSONObject().apply {
-                    put("appId", appId)
+                    // Формат эталона: action_type + appId + metaTag (может быть пустым)
                     put("action_type", actionType)
+                    put("appId", appId)
+                    put("metaTag", "")
                 })
             })
         })
     }
 
-    /** Запрос списка установленных приложений */
+    private fun awaitLaunchAck(timeoutMs: Long): Boolean {
+        var waited = 0L
+        while (!launchAck && waited < timeoutMs) {
+            Thread.sleep(200)
+            waited += 200
+        }
+        return launchAck
+    }
+
+    /**
+     * Список приложений. На Tizen 5+ (2020+) Samsung отключила ответ на
+     * ed.installedApp.get (issue #23 эталонной библиотеки), поэтому если ТВ молчит —
+     * REST-проверка известных приложений: GET /api/v2/applications/{appId}.
+     */
     fun requestApps() {
+        appsReceived = false
         send(JSONObject().apply {
             put("method", "ms.channel.emit")
             put("params", JSONObject().apply {
@@ -272,6 +327,54 @@ class SamsungRemote(
                 put("to", "host")
             })
         })
+        Thread {
+            Thread.sleep(4000)
+            if (appsReceived) return@Thread
+
+            log("ТВ молчит: на Tizen 5+ список по WS отключён Samsung (issue #23 эталона)")
+            log("REST-проверка известных приложений (GET /api/v2/applications/{id})...")
+            val known = listOf(
+                "11101200001" to "YouTube",
+                "org.tizen.netflixapp" to "Netflix",
+                "org.tizen.browser" to "Интернет",
+                "com.amazon.amazonvideo.livingroom" to "Prime Video",
+                "org.tizen.samsungtvplus" to "Samsung TV Plus"
+            )
+            val found = mutableListOf<AppInfo>()
+            val t = token
+            for ((id, name) in known) {
+                var code = restRequest("applications/$id", "GET")
+                if (code == 401 && !t.isNullOrBlank()) {
+                    code = restRequest("applications/$id?token=$t", "GET")
+                }
+                if (code in 200..299) {
+                    found.add(AppInfo(id, name))
+                    log("✔ $name установлен (HTTP $code)")
+                }
+            }
+            if (found.isNotEmpty()) {
+                onApps(found)
+                log("Найдено установленных: ${found.size} из ${known.size} проверенных")
+            } else {
+                log("REST-проверка ничего не нашла — ТВ не отвечает и на REST (коды выше)")
+            }
+        }.start()
+    }
+
+    /** Простой REST-запрос к ТВ (порт 8001). Возвращает HTTP-код, -1 при сетевой ошибке. */
+    private fun restRequest(route: String, method: String): Int {
+        return try {
+            val conn = URL("http://$host:8001/api/v2/$route").openConnection() as HttpURLConnection
+            conn.requestMethod = method
+            conn.connectTimeout = 4000
+            conn.readTimeout = 4000
+            val code = conn.responseCode
+            conn.disconnect()
+            code
+        } catch (e: Exception) {
+            log("!! REST $method /$route: ${e.message}")
+            -1
+        }
     }
 
     fun close() {
