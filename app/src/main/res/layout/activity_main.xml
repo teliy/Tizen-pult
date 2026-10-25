@@ -232,6 +232,14 @@
             </TableRow>
         </TableLayout>
 
+        <!-- Тачпад/мышь (v2.8): Tizen — настоящий курсор на ТВ, старые ТВ — свайп-стрелки -->
+        <Button
+            android:id="@+id/btnTouchpad"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="Тачпад / мышь на ТВ" />
+
         <!-- Основные кнопки -->
         <TableLayout
             android:layout_width="match_parent"

@@ -104,6 +104,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnFind).setOnClickListener { findTv(manual = true) }
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
+        findViewById<Button>(R.id.btnTouchpad).setOnClickListener { showTouchpad() }
         findViewById<Button>(R.id.btnLog).setOnClickListener { openLogDialog() }
         findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
         findViewById<TextView>(R.id.versionView).text = "Версия ${currentVersionName()}"
@@ -458,6 +459,76 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openApps() = sendOrToast { requestApps() }
+
+    /**
+     * Тачпад (v2.8). Режим зависит от протокола текущего сеанса:
+     *  - Tizen (wss/ws) — настоящая мышь: палец двигает курсор ТВ (ProcessMouseDevice,
+     *    логический экран 1920×1080), тап — LeftClick;
+     *  - старые ТВ (smart/legacy) — мыши в протоколе нет: свайп — стрелки,
+     *    тап — OK (KEY_ENTER).
+     */
+    @SuppressLint("SetTextI18n")
+    private fun showTouchpad() {
+        val r = remote
+        if (r == null || !r.isConnected()) {
+            toast("Сначала подключитесь к ТВ")
+            return
+        }
+        val mouseMode = r.supportsMouse()
+        val d = resources.displayMetrics.density
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding((14 * d).toInt(), (10 * d).toInt(), (14 * d).toInt(), 0)
+        }
+
+        val pad = TouchpadView(
+            this,
+            mouseMode = mouseMode,
+            onMove = { x, y -> sendOrToast { sendMouseMove(x, y) } },
+            onClick = {
+                sendOrToast { if (mouseMode) sendMouseClick() else sendKey("KEY_ENTER") }
+            },
+            onArrow = { key -> sendOrToast { sendKey(key) } }
+        )
+        box.addView(
+            pad,
+            LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (270 * d).toInt())
+        )
+
+        val hint = TextView(this).apply {
+            textSize = 12f
+            setPadding(0, (8 * d).toInt(), 0, 0)
+            text = if (mouseMode)
+                "Курсор на экране ТВ: ведите пальцем, тап — клик. Пропали кнопки пульта — они на главном экране. Если курсор не появился — напишите в чат, подберём координаты."
+            else
+                "Этот ТВ не поддерживает мышь — режим стрелок: свайп в сторону = перемещение, тап = OK."
+        }
+        box.addView(hint)
+
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun keyBtn(text: String, key: String): Button = Button(this).apply {
+            this.text = text
+            setOnClickListener { sendOrToast { sendKey(key) } }
+        }
+        val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+            margin = (2 * d).toInt()
+        }
+        row.addView(keyBtn("◀ Назад", "KEY_RETURN"), lp)
+        row.addView(keyBtn("HOME", "KEY_HOME"), lp)
+        row.addView(keyBtn("OK", "KEY_ENTER"), lp)
+        box.addView(row)
+
+        val modeNote = if (mouseMode)
+            "режим мыши (курсор ТВ 1920×1080, тап = LeftClick)"
+        else
+            "режим стрелок (мышь протоколом не поддержана)"
+        appendLog("— тачпад: $modeNote —")
+        AlertDialog.Builder(this)
+            .setTitle(if (mouseMode) "Тачпад — мышь на ТВ" else "Тачпад — стрелки")
+            .setView(box)
+            .setNegativeButton("Закрыть", null)
+            .show()
+    }
 
     // ---------- Обновление приложения ----------
 

@@ -1,5 +1,6 @@
 package com.teliy.tizenpult
 
+import android.os.SystemClock
 import android.util.Base64
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -92,6 +93,9 @@ class SamsungRemote(
     /** Буфер для requestAppsOrsay: ed-события, пришедшие через smart-канал */
     @Volatile private var pendingSmartApps: MutableList<AppInfo>? = null
 
+    /** Первый Move мыши печатаем в журнал, дальнейшие идут тихо (иначе лог забивается) */
+    @Volatile private var mouseMoveLogged = false
+
     /** ТВ использует самоподписанный сертификат — доверяем ему в рамках локальной сети */
     private val trustManager: X509TrustManager = object : X509TrustManager {
         override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) {}
@@ -129,6 +133,7 @@ class SamsungRemote(
         rejected = false
         wsProbeActive = false
         wsProbeErrors = 0
+        mouseMoveLogged = false
 
         if (isLegacy()) {
             val lr = LegacyRemote(
@@ -386,14 +391,56 @@ class SamsungRemote(
         return result
     }
 
-    private fun send(payload: JSONObject) {
+    private fun send(payload: JSONObject, quiet: Boolean = false) {
         val sent = ws?.send(payload.toString()) ?: false
         if (sent) {
-            log("▶ К ТВ: ${payload}")
+            if (!quiet) log("▶ К ТВ: ${payload}")
         } else {
             log("!! НЕ отправлено — соединение закрыто. Нажмите «Подключ.»")
             onStatus("Соединение потеряно — нажмите «Подключ.»")
         }
+    }
+
+    /** Есть ли в текущем сеансе настоящий курсор (ProcessMouseDevice) — только Tizen wss/ws */
+    fun supportsMouse(): Boolean = connected && !isLegacy() && !isSmart()
+
+    /**
+     * Переместить курсор ТВ (тачпад, режим мыши).
+     * Формат ProcessMouseDevice по эталону samsungctl / samsung-tv-ws-api;
+     * координаты абсолютные, логический экран 1920×1080 (Tizen UI-канвас).
+     * Move-кадры в лог не пишутся (тихо) — до 25 кадров/с забили бы журнал мгновенно.
+     */
+    fun sendMouseMove(x: Int, y: Int) {
+        if (!supportsMouse()) return
+        if (!mouseMoveLogged) {
+            log("▶ мышь: ProcessMouseDevice Move — курсор ($x,$y); дальнейшие Move в журнал не пишутся")
+            mouseMoveLogged = true
+        }
+        send(JSONObject().apply {
+            put("method", "ms.remote.control")
+            put("params", JSONObject().apply {
+                put("Cmd", "Move")
+                put("Position", JSONObject().apply {
+                    put("x", x)
+                    put("y", y)
+                    put("Time", SystemClock.elapsedRealtime().toString())
+                })
+                put("TypeOfRemote", "ProcessMouseDevice")
+            })
+        }, quiet = true)
+    }
+
+    /** Клик левой кнопкой мыши в текущей позиции курсора (тачпад, режим мыши) */
+    fun sendMouseClick() {
+        if (!supportsMouse()) return
+        log("▶ мышь: LeftClick в позиции курсора")
+        send(JSONObject().apply {
+            put("method", "ms.remote.control")
+            put("params", JSONObject().apply {
+                put("Cmd", "LeftClick")
+                put("TypeOfRemote", "ProcessMouseDevice")
+            })
+        })
     }
 
     /** Нажатие кнопки пульта, например KEY_VOLUP, KEY_POWER, KEY_HDMI */
