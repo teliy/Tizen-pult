@@ -15,6 +15,7 @@ import java.net.DatagramSocket
 import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.net.URL
+import java.net.URLEncoder
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
@@ -48,7 +49,7 @@ class SamsungRemote(
     private val deviceId: String = "",          // UUID для сопряжения Smart View 2.0
     private val onStatus: (String) -> Unit,
     private val onToken: (String) -> Unit,
-    private val onApps: (List<AppInfo>) -> Unit,
+    private val onApps: (List<AppInfo>, Boolean) -> Unit,   // список + признак «каталог» (не подтверждён ТВ)
     private val onLog: (String) -> Unit,
     private val onSmartAuth: ((String) -> Unit)? = null,
     private val onPin: ((retry: Boolean, submit: (String?) -> Unit) -> Unit)? = null
@@ -282,7 +283,7 @@ class SamsungRemote(
                     log("WS-список: +${apps.size} шт.")
                 } else {
                     log("Список приложений: ${apps.size} шт.")
-                    if (apps.isNotEmpty()) onApps(apps)
+                    if (apps.isNotEmpty()) onApps(apps, false)
                 }
             }
 
@@ -451,9 +452,9 @@ class SamsungRemote(
      * Каскад: WS DEEP_LINK → WS NATIVE_LAUNCH → REST POST (http:8001, затем https:8002).
      * Подтверждение ТВ — ответное событие ed.apps.launch с кодом 200.
      */
-    fun launchApp(appId: String) {
+    fun launchApp(appId: String, name: String? = null) {
         if (isLegacy() || isSmart()) {
-            launchAppOrsay(appId)
+            launchAppOrsay(appId, name)
             return
         }
         launchAck = false
@@ -620,35 +621,58 @@ class SamsungRemote(
             if (found.isNotEmpty()) {
                 found.sortWith(compareBy { it.name.lowercase(Locale.ROOT) })
                 log("✔ Итого приложений: ${found.size}")
-                onApps(found)
+                onApps(found, false)
             } else {
                 log("Список получить не удалось — пришлите журнал целиком: по кодам 404/401/-1 видно, что отвечает прошивка")
-                onApps(emptyList())
+                onApps(emptyList(), false)
             }
         }.start()
     }
 
     /**
-     * Orsay (2011–2015): полного списка приложений протокол не отдаёт, НО
-     * REST-поверхность /ws/apps/ (порт 8080) отвечает 200 для УСТАНОВЛЕННЫХ
-     * приложений (та же поверхность, что CloudPINPage). Проверяем таблицу
-     * известных ID — найденное показываем в списке; запуск — POST /ws/apps/<id>/run.
+     * Orsay (2011–2015): готового LIST-эндпоинта протокол не имеет (в эталоне
+     * xchwarze v3 encrypted-приложения отсутствуют вовсе). Стратегия v2.6:
+     * 1) корень /ws/apps/ — на части прошивок отдаёт XML-список (парсим, если придёт);
+     * 2) проба известных ID + DIAL-имён (GET /ws/apps/YouTube подтверждён на Orsay
+     *    J-серии 2015 — home-assistant/core#117694);
+     * 3) если ничего не подтвердилось — КАТАЛОГ известных приложений: каждый запуск
+     *    POST-ом честно проверит установку (GET может 404-ить там, где POST сработает).
      */
     private fun requestAppsOrsay() {
         Thread {
             val port = orsayPort()
             onStatus("Проверяю известные приложения на ТВ (REST :$port)…")
-            log("Orsay: проверяю ${ORSAY_KNOWN_APPS.size} известных ID через GET /ws/apps/<id>…")
+            log("Orsay: приложения — корень /ws/apps/, затем ${ORSAY_KNOWN_APPS.size} ID + DIAL-имена…")
+
+            // 1) корень /ws/apps/ (ответ прошивки виден в журнале — диагностика)
+            try {
+                val (rc, rb) = orsayRest(port, "ws/apps/", "GET")
+                if (rc in 200..299) {
+                    val parsed = parseOrsayAppList(rb)
+                    if (parsed.isNotEmpty()) {
+                        log("✔ /ws/apps/ отдал список: ${parsed.size} шт.")
+                        onStatus("Найдено приложений: ${parsed.size}")
+                        onApps(parsed, false)
+                        return@Thread
+                    }
+                }
+            } catch (_: Exception) {}
+
+            // 2) проба известных ID и DIAL-имён параллельно
+            val targets = ORSAY_KNOWN_APPS + ORSAY_DIAL_NAMES.map { it to it }
             val hits = Collections.synchronizedList(mutableListOf<AppInfo>())
+            val firstMiss = Collections.synchronizedList(mutableListOf<String>())
             val pool = Executors.newFixedThreadPool(8)
-            val futures = ORSAY_KNOWN_APPS.map { (id, name) ->
+            val futures = targets.map { (id, name) ->
                 pool.submit {
                     val (code, body) = orsayRest(port, "ws/apps/$id", "GET", quiet = true)
                     if (code in 200..299) {
-                        // имя из ответа ТВ (<name>/<title>), иначе — из нашей таблицы
-                        val nm = Regex("<(name|title)>([^<]+)</", RegexOption.IGNORE_CASE)
+                        // имя из ответа ТВ (<name>/<title>/<appname>), иначе — из нашей таблицы
+                        val nm = Regex("<(name|title|appname)>\\s*([^<]+?)\\s*</", RegexOption.IGNORE_CASE)
                             .find(body)?.groupValues?.get(2)?.trim().takeUnless { it.isNullOrBlank() } ?: name
                         hits.add(AppInfo(id, nm))
+                    } else if (body.isNotBlank() && firstMiss.isEmpty()) {
+                        firstMiss.add("HTTP $code: ${body.take(120).replace('\n', ' ')}")
                     }
                 }
             }
@@ -656,23 +680,51 @@ class SamsungRemote(
                 try { f.get(20, TimeUnit.SECONDS) } catch (_: Exception) {}
             }
             pool.shutdownNow()
+            firstMiss.firstOrNull()?.let { log("↳ пример отказа ТВ: $it") }
+
             // дубли по имени (у YouTube/Netflix по два ID — оставляем первый сработавший)
             val list = hits.distinctBy { it.name.lowercase(Locale.ROOT) }
                 .sortedBy { it.name.lowercase(Locale.ROOT) }
             if (list.isNotEmpty()) {
-                log("✔ Найдено установленных (из известных ID): ${list.size}")
+                log("✔ Найдено установленных (из известных): ${list.size}")
                 onStatus("Найдено приложений: ${list.size}")
-                onApps(list)
+                onApps(list, false)
             } else {
-                log("✖ Ни один известный ID не подтвердился — полный список приложений по старому протоколу недоступен")
-                onStatus("Список недоступен — доступны кнопки пульта")
-                onApps(emptyList())
+                log("✖ Ни один ID не подтвердился — LIST-эндпоинта на Orsay нет; открываю каталог (запуск POST-ом проверит установку)")
+                val catalog = ORSAY_KNOWN_APPS
+                    .distinctBy { it.second.lowercase(Locale.ROOT) }
+                    .map { AppInfo(it.first, it.second) }
+                    .sortedBy { it.name.lowercase(Locale.ROOT) }
+                onStatus("Каталог приложений — запуск покажет, установлено ли")
+                onApps(catalog, true)
             }
         }.start()
     }
 
-    /** Запуск приложения на Orsay: POST /ws/apps/<id>/run, запасной — POST /ws/apps/<id> */
-    private fun launchAppOrsay(appId: String) {
+    /** Разбор возможного XML-списка приложений (формат не документирован — парсим свободно) */
+    private fun parseOrsayAppList(body: String): List<AppInfo> {
+        if (!body.contains('<')) return emptyList()
+        val out = mutableListOf<AppInfo>()
+        val block = Regex("(?is)<app\\b[^>]*>(.*?)</app\\s*>")
+        val attrId = Regex("(?is)<app\\b[^>]*\\bid\\s*=\\s*[\"']([^\"']+)[\"']")
+        for (m in block.findAll(body)) {
+            val b = m.groupValues[1]
+            val id = Regex("(?is)<(?:appid|id|applicationid)>\\s*([A-Za-z0-9._-]+)\\s*</")
+                .find(b)?.groupValues?.get(1)
+                ?: attrId.find(m.value)?.groupValues?.get(1)
+            val name = Regex("(?is)<(?:appname|name|title)>\\s*([^<]+?)\\s*</")
+                .find(b)?.groupValues?.get(1)?.trim()
+            if (!id.isNullOrBlank()) out.add(AppInfo(id, (name ?: id).ifBlank { id }))
+        }
+        return out
+    }
+
+    /**
+     * Запуск приложения на Orsay. Каскад: POST /ws/apps/<id>/run →
+     * POST /ws/apps/<id> → DIAL-стиль по имени (POST /ws/apps/<имя>/run и /ws/apps/<имя>) —
+     * часть прошивок адресует приложения именем пути (как YouTube в DIAL).
+     */
+    private fun launchAppOrsay(appId: String, name: String? = null) {
         Thread {
             val port = orsayPort()
             var (code, body) = orsayRest(port, "ws/apps/$appId/run", "POST")
@@ -680,6 +732,17 @@ class SamsungRemote(
                 // часть прошивок запускает POST-ом самого приложения (как CloudPINPage)
                 val r = orsayRest(port, "ws/apps/$appId", "POST")
                 code = r.first; body = r.second
+            }
+            val nm = name?.trim()?.takeUnless { it.isEmpty() || it.equals(appId, true) }
+            if (code !in 200..299 && nm != null) {
+                val nmEnc = URLEncoder.encode(nm, "UTF-8").replace("+", "%20")
+                log("ID не сработал — пробую DIAL-запуск по имени «$nm»…")
+                var r = orsayRest(port, "ws/apps/$nmEnc/run", "POST")
+                code = r.first; body = r.second
+                if (code !in 200..299) {
+                    r = orsayRest(port, "ws/apps/$nmEnc", "POST")
+                    code = r.first; body = r.second
+                }
             }
             if (code in 200..299) {
                 log("✔ Приложение запущено (HTTP $code)${if (body.isNotBlank()) " :: " + body.take(120).replace('\n', ' ') else ""}")
@@ -947,6 +1010,12 @@ class SamsungRemote(
             "3201806016390" to "DAZN",
             "3201601007230" to "HBO"
         )
+
+        /**
+         * DIAL-имена: часть прошивок адресует приложения по имени пути
+         * (/ws/apps/YouTube) — подтверждено на Orsay J-серии 2015.
+         */
+        val ORSAY_DIAL_NAMES: List<String> = listOf("YouTube", "Netflix")
 
         /**
          * Wake-on-LAN: пробуждение ТВ из режима сна.

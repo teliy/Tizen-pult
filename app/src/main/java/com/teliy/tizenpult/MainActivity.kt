@@ -376,7 +376,7 @@ class MainActivity : AppCompatActivity() {
             deviceId = deviceUuid(),
             onStatus = { s -> runOnUiThread { statusView.text = s } },
             onToken = { t -> prefs.edit().putString("token:$host", t).apply() },
-            onApps = { apps -> runOnUiThread { showApps(apps) } },
+            onApps = { apps, catalog -> runOnUiThread { showApps(apps, catalog) } },
             onLog = { s -> runOnUiThread { appendLog(s) } },
             onSmartAuth = { auth -> prefs.edit().putString("sv:$host", auth).apply() },
             onPin = { retry, submit -> showPinDialog(retry, submit) }
@@ -578,7 +578,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun showApps(apps: List<SamsungRemote.AppInfo>) {
+    private fun showApps(apps: List<SamsungRemote.AppInfo>, catalog: Boolean = false) {
         if (apps.isEmpty()) {
             AlertDialog.Builder(this)
                 .setTitle("Список приложений")
@@ -589,12 +589,30 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val names = apps.map { "${it.name}\n(${it.appId})" }.toTypedArray()
+        val title = if (catalog) "Каталог приложений (${apps.size}) — запуск проверит установку"
+                    else "Приложения на ТВ (${apps.size})"
         AlertDialog.Builder(this)
-            .setTitle("Приложения на ТВ (${apps.size})")
+            .setTitle(title)
             .setItems(names) { _, i ->
-                sendOrToast { launchApp(apps[i].appId) }
+                sendOrToast { launchApp(apps[i].appId, apps[i].name) }
             }
+            .setNeutralButton("Своё приложение…") { _, _ -> showManualAppDialog() }
             .setNegativeButton("Закрыть", null)
+            .show()
+    }
+
+    /** Ручной запуск приложения по ID или имени (для приложений, которых нет в каталоге) */
+    private fun showManualAppDialog() {
+        val input = EditText(this)
+        input.hint = "например 1112990019 или YouTube"
+        AlertDialog.Builder(this)
+            .setTitle("Запуск по ID/имени приложения")
+            .setView(input)
+            .setPositiveButton("Запустить") { _, _ ->
+                val v = input.text.toString().trim()
+                if (v.isNotEmpty()) sendOrToast { launchApp(v) }
+            }
+            .setNegativeButton("Отмена", null)
             .show()
     }
 

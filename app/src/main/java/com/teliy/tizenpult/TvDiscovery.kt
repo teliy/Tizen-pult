@@ -131,7 +131,9 @@ object TvDiscovery {
                     source = sourceOf(ip, savedHost, knownIps, ssdp)
                 )
                 found.add(res)
-                stage("ТВ найден (Tizen): ${res.name} — ${res.model} ($ip)")
+                // 8001 отвечает и на старых Orsay (2014–2015) — различаем по REST-порту 8080
+                val era = if (portOpen(ip, 8080, 400)) "Orsay 2014–2015" else "Tizen"
+                stage("ТВ найден ($era): ${res.name} — ${res.model} ($ip)")
             } else {
                 // Не отвечает по Tizen-API (2016+). Может, это старый Samsung
                 // (2011–2015) — спросим его имя по http://IP:7676/ms/1.0/
