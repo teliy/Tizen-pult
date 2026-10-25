@@ -10,6 +10,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.HttpURLConnection
 import java.net.InetAddress
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
@@ -169,17 +170,50 @@ class SamsungRemote(
     }
 
     /**
-     * Ввод текста в поле на ТВ (поле должно быть в фокусе, открыта экранная клавиатура).
-     *
-     * ТВ 2021+ (Tizen 5.5/6, напр. AU9000) приняли НОВЫЙ формат SendInputString:
-     *   Cmd = base64-текст, DataOfCmd = "base64", TypeOfRemote = "SendInputString"
-     * и требуют предварительный broadcast "custom.remote.textReceived"
-     * (см. send_text() в samsung-tv-ws-api — эталонной библиотеке Home Assistant).
-     *
-     * Старый формат (Cmd="SendInput", TypeOfRemote="SendInput") оставлен вторым
-     * кадром как fallback для ТВ 2016–2019: на новых он игнорируется безвредно.
+     * Умный ввод текста: сначала REST IME API (официальный путь для ТВ 2021+, где
+     * WS-текст отключён), при неудаче — WS-форматы в фоновом потоке.
      */
-    fun sendText(text: String) {
+    fun sendTextSmart(text: String) {
+        if (text.isEmpty()) return
+        Thread {
+            val ok = sendTextIme(text)
+            if (!ok) {
+                log("IME недоступен — отправляю WS-форматы (ТВ 2016–2019)")
+                sendTextWs(text)
+            }
+        }.start()
+    }
+
+    /**
+     * Ввод текста через REST IME API: POST http://IP:8001/api/v2/remoteControl/imeInput/{base64}?token={ws-токен}
+     * Токен — тот же, что получен после «Разрешить» на экране ТВ (используется библиотекой
+     * samsung-tv-ws-api для паролей на ТВ 2021+). true = ТВ принял текст (HTTP 200).
+     */
+    private fun sendTextIme(text: String): Boolean {
+        val t = token
+        if (t.isNullOrBlank()) {
+            log("IME: нет сохранённого токена — нажмите «Подключ.» и «Разрешить» на ТВ")
+            return false
+        }
+        return try {
+            val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+            val conn = URL("http://$host:8001/api/v2/remoteControl/imeInput/$b64?token=$t")
+                .openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.connectTimeout = 4000
+            conn.readTimeout = 4000
+            val code = conn.responseCode
+            conn.disconnect()
+            log(if (code == 200) "✔ Текст доставлен (IME API, HTTP $code)" else "IME API ответил HTTP $code")
+            code == 200
+        } catch (e: Exception) {
+            log("!! IME ошибка: ${e.message}")
+            false
+        }
+    }
+
+    /** Ввод текста по WebSocket: новый формат ТВ 2021+ и legacy для 2016–2019 */
+    private fun sendTextWs(text: String) {
         if (text.isEmpty()) return
         val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
 

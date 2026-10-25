@@ -120,7 +120,12 @@ class MainActivity : AppCompatActivity() {
             toast("Введите текст")
             return
         }
-        sendOrToast { sendText(text) }
+        val r = remote
+        if (r == null) {
+            toast("Сначала подключитесь к ТВ")
+            return
+        }
+        r.sendTextSmart(text)
     }
 
     private fun openApps() = sendOrToast { requestApps() }
