@@ -511,7 +511,7 @@ class MainActivity : AppCompatActivity() {
             setOnClickListener { sendOrToast { sendKey(key) } }
         }
         val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-            margin = (2 * d).toInt()
+            setMargins((2 * d).toInt(), (2 * d).toInt(), (2 * d).toInt(), (2 * d).toInt())
         }
         row.addView(keyBtn("◀ Назад", "KEY_RETURN"), lp)
         row.addView(keyBtn("HOME", "KEY_HOME"), lp)
