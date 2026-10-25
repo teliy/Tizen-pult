@@ -73,7 +73,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:hint="Текст на ТВ: сначала откройте поиск/поле ввода на ТВ"
+                android:hint="Текст для ТВ"
                 android:inputType="text"
                 android:maxLines="1" />
 
@@ -83,6 +83,12 @@
                 android:layout_height="wrap_content"
                 android:text="Отправить" />
         </LinearLayout>
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Сначала откройте на ТВ поле ввода (например, поиск), затем отправьте текст."
+            android:textSize="12sp" />
 
         <!-- Питание -->
         <Button
@@ -302,7 +308,7 @@
             android:layout_height="wrap_content"
             android:gravity="center"
             android:paddingTop="2dp"
-            android:text="Версия 1.9"
+            android:text="Версия 2.0"
             android:textSize="12sp" />
 
     </LinearLayout>

@@ -23,11 +23,15 @@ import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.FileProvider
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -43,6 +47,14 @@ class MainActivity : AppCompatActivity() {
 
     /** APK, ожидающий установки после выдачи разрешения «неизвестные приложения» */
     private var pendingInstall: File? = null
+
+    /** ТВ, найденные во время прошлых поисков (хранится в настройках) */
+    private data class KnownTv(
+        val ip: String,
+        val name: String,
+        val model: String,
+        val lastSeen: Long
+    )
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -115,37 +127,145 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Автопоиск ТВ: сохранённый IP → SSDP → скан подсети.
-     * Если ничего не найдено и известен MAC — пробуждение по сети и повторная проверка.
+     * Автопоиск ТВ: сохранённый IP + прошлые находки + SSDP + скан всех подсетей.
+     * Если найдено несколько ТВ — показываем список; если ни одного и известен MAC —
+     * пробуждение по сети и повторная проверка.
+     * Каждый этап пишется в журнал — по нему можно понять, почему ТВ не нашёлся.
      * Вызывается при старте приложения и по кнопке «Найти ТВ».
      */
     private fun findTv(manual: Boolean) {
         statusView.text = if (manual) "Поиск ТВ в сети…" else "Автопоиск ТВ при запуске…"
         Thread {
-            var res = TvDiscovery.discover(prefs.getString("host", null)) { p ->
+            var report = TvDiscovery.discoverAll(
+                applicationContext,
+                prefs.getString("host", null),
+                loadKnown().map { it.ip }
+            ) { p ->
                 runOnUiThread { statusView.text = "🔎 $p" }
             }
-            // Ничего не нашли — возможно, ТВ спит. Пробуждаем и проверяем ещё раз
-            if (res == null) {
+
+            // Подробности всех этапов — в журнал (для диагностики в чат)
+            val reportToLog = report
+            runOnUiThread {
+                appendLog("— поиск ТВ ${if (manual) "(вручную)" else "(автозапуск)"} —")
+                for (line in reportToLog.log) appendLog(line)
+            }
+
+            // Ничего не нашли — возможно, ТВ спит: пробуждаем и проверяем ещё раз
+            if (report.found.isEmpty()) {
                 val mac = prefs.getString("mac", null)
-                if (!mac.isNullOrBlank()) {
+                val saved = prefs.getString("host", null)
+                if (!mac.isNullOrBlank() && !saved.isNullOrBlank()) {
                     runOnUiThread { statusView.text = "ТВ не отвечает — отправляю Wake-on-LAN…" }
                     SamsungRemote.wakeOnLan(mac)
                     Thread.sleep(5000)
-                    val saved = prefs.getString("host", null)
-                    if (!saved.isNullOrBlank()) res = TvDiscovery.verify(saved, 2000)
+                    val r = TvDiscovery.verify(saved, 2000)
+                    if (r != null) {
+                        report = TvDiscovery.Report(
+                            listOf(r.copy(source = "после Wake-on-LAN")),
+                            listOf("WoL: ТВ проснулся и ответил ($saved)")
+                        )
+                        runOnUiThread { appendLog(report.log.first()) }
+                    }
                 }
             }
-            if (res == null) {
-                runOnUiThread {
+
+            rememberFound(report.found)
+
+            when {
+                report.found.size == 1 -> {
+                    val tv = report.found[0]
+                    prefs.edit().putString("host", tv.ip).apply()
+                    runOnUiThread { ipInput.setText(tv.ip) }
+                    connectToHost(tv.ip)
+                }
+                report.found.size > 1 -> runOnUiThread { showTvPicker(report.found) }
+                else -> runOnUiThread {
                     statusView.text = "ТВ не найден. Включите ТВ, проверьте Wi-Fi или введите IP вручную"
+                    val hist = loadKnown()
+                    if (hist.isNotEmpty()) showTvPicker(emptyList(), hist)
                 }
-                return@Thread
             }
-            runOnUiThread { ipInput.setText(res.ip) }
-            prefs.edit().putString("host", res.ip).apply()
-            connectToHost(res.ip)
         }.start()
+    }
+
+    /** Сохраняем найденные сейчас ТВ в историю (показываются, даже когда выключены) */
+    private fun rememberFound(found: List<TvDiscovery.Result>) {
+        if (found.isEmpty()) return
+        val now = System.currentTimeMillis()
+        val hist = loadKnown()
+        for (r in found) {
+            hist.removeAll { it.ip == r.ip }
+            hist.add(0, KnownTv(r.ip, r.name, r.model, now))
+        }
+        saveKnown(hist.distinctBy { it.ip }.take(20))
+    }
+
+    private fun loadKnown(): MutableList<KnownTv> = try {
+        val arr = JSONArray(prefs.getString("knownTvs", "[]") ?: "[]")
+        (0 until arr.length()).map {
+            val x = arr.getJSONObject(it)
+            KnownTv(x.getString("ip"), x.optString("name"), x.optString("model"), x.optLong("lastSeen"))
+        }.toMutableList()
+    } catch (_: Exception) {
+        mutableListOf()
+    }
+
+    private fun saveKnown(list: List<KnownTv>) {
+        val arr = JSONArray()
+        for (k in list) {
+            arr.put(JSONObject().apply {
+                put("ip", k.ip)
+                put("name", k.name)
+                put("model", k.model)
+                put("lastSeen", k.lastSeen)
+            })
+        }
+        prefs.edit().putString("knownTvs", arr.toString()).apply()
+    }
+
+    private fun lastSeenText(ts: Long): String {
+        if (ts <= 0) return "ранее"
+        val days = TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis() - ts)
+        return when {
+            days <= 0 -> "сегодня"
+            days == 1L -> "вчера"
+            days < 7 -> "$days дн. назад"
+            else -> SimpleDateFormat("dd.MM", Locale.getDefault()).format(Date(ts))
+        }
+    }
+
+    /**
+     * Список ТВ: несколько найденных сейчас или найденные ранее
+     * (когда ни один не ответил). Тап — подключение.
+     */
+    private fun showTvPicker(live: List<TvDiscovery.Result>, offline: List<KnownTv> = emptyList()) {
+        val labels = ArrayList<String>()
+        val ips = ArrayList<String>()
+        for (tv in live) {
+            val model = tv.model.ifBlank { "Samsung" }
+            labels.add("${tv.name} — $model — ${tv.ip} · ${tv.source}")
+            ips.add(tv.ip)
+        }
+        for (k in offline) {
+            if (live.any { it.ip == k.ip }) continue
+            labels.add("• ${k.name.ifBlank { "ТВ" }} — ${k.ip} (в сети ${lastSeenText(k.lastSeen)})")
+            ips.add(k.ip)
+        }
+        if (labels.isEmpty()) return
+        AlertDialog.Builder(this)
+            .setTitle(
+                if (live.size > 1) "Найдено ТВ: ${live.size} — выберите"
+                else "Найденные ранее ТВ"
+            )
+            .setItems(labels.toTypedArray()) { _, i ->
+                val ip = ips[i]
+                ipInput.setText(ip)
+                prefs.edit().putString("host", ip).apply()
+                connectToHost(ip)
+            }
+            .setNegativeButton("Закрыть", null)
+            .show()
     }
 
     private fun connectToHost(host: String) {
