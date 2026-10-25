@@ -3,6 +3,8 @@ package com.teliy.tizenpult
 import android.util.Base64
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -10,9 +12,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.HttpURLConnection
 import java.net.InetAddress
-import java.net.URL
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
@@ -254,14 +254,14 @@ class SamsungRemote(
             if (!imeSeen) {
                 log("Подсказка: ТВ не сообщал об открытой клавиатуре в этом сеансе. " +
                     "Откройте поле ввода на ТВ (поиск YouTube и т.п.), дождитесь ⌨ в журнале и повторите")
+                onStatus("⌨ Откройте поле ввода на ТВ и повторите отправку")
             }
         }.start()
     }
 
     /**
-     * Запуск приложения по appId (11101200001 — YouTube, org.tizen.netflixapp — Netflix).
-     * На прошивках 2021 (Tizen 5.5/6.0) запуск по WS часто молча игнорируется, поэтому
-     * каскад: WS DEEP_LINK → WS NATIVE_LAUNCH → REST POST /api/v2/applications/{appId}.
+     * Запуск приложения по appId (111299001912 — YouTube, 11101200001 — Netflix).
+     * Каскад: WS DEEP_LINK → WS NATIVE_LAUNCH → REST POST (http:8001, затем https:8002).
      * Подтверждение ТВ — ответное событие ed.apps.launch с кодом 200.
      */
     fun launchApp(appId: String) {
@@ -274,16 +274,24 @@ class SamsungRemote(
             sendLaunchWs(appId, "NATIVE_LAUNCH")
             if (awaitLaunchAck(3000)) return@Thread
 
-            log("WS-запуск игнорируется прошивкой 2021 — пробую REST POST /api/v2/applications/$appId")
+            log("WS-запуск не подтверждён — пробую REST POST (порт 8001, затем 8002)")
             val t = token
-            var code = restRequest("applications/$appId", "POST")
+            var code = restCall("http", 8001, "applications/$appId", "POST")
             if (code == 401 && !t.isNullOrBlank()) {
-                code = restRequest("applications/$appId?token=$t", "POST")
+                code = restCall("http", 8001, "applications/$appId?token=$t", "POST")
             }
             if (code in 200..299) {
-                log("✔ Приложение запущено через REST API (HTTP $code)")
+                log("✔ Приложение запущено (REST 8001, HTTP $code)")
+                return@Thread
+            }
+            var code2 = restCall("https", 8002, "applications/$appId", "POST")
+            if (code2 == 401 && !t.isNullOrBlank()) {
+                code2 = restCall("https", 8002, "applications/$appId?token=$t", "POST")
+            }
+            if (code2 in 200..299) {
+                log("✔ Приложение запущено (REST 8002, HTTP $code2)")
             } else {
-                log("REST-запуск ответил HTTP $code — приложение может отсутствовать или ТВ не отвечает")
+                log("REST не сработал: 8001=$code, 8002=$code2 — возможно, приложение не установлено или эндпоинта нет на этой прошивке")
             }
         }.start()
     }
@@ -316,7 +324,8 @@ class SamsungRemote(
     /**
      * Список приложений. На Tizen 5+ (2020+) Samsung отключила ответ на
      * ed.installedApp.get (issue #23 эталонной библиотеки), поэтому если ТВ молчит —
-     * REST-проверка известных приложений: GET /api/v2/applications/{appId}.
+     * REST-проверка известных приложений по списку сообщества. Для ТВ 2020+ первыми
+     * идут новые (правые) ID. ВНИМАНИЕ: YouTube = 111299001912 (11101200001 — это Netflix!).
      */
     fun requestApps() {
         appsReceived = false
@@ -332,47 +341,68 @@ class SamsungRemote(
             if (appsReceived) return@Thread
 
             log("ТВ молчит: на Tizen 5+ список по WS отключён Samsung (issue #23 эталона)")
-            log("REST-проверка известных приложений (GET /api/v2/applications/{id})...")
+            log("REST-проверка известных приложений — каждый запрос пишет свой код:")
             val known = listOf(
-                "11101200001" to "YouTube",
-                "org.tizen.netflixapp" to "Netflix",
-                "org.tizen.browser" to "Интернет",
-                "com.amazon.amazonvideo.livingroom" to "Prime Video",
-                "org.tizen.samsungtvplus" to "Samsung TV Plus"
+                "111299001912" to "YouTube",
+                "11101200001" to "Netflix",
+                "3201907018807" to "Netflix (нов. ID)",
+                "3201907018784" to "Интернет",
+                "org.tizen.browser" to "Интернет (стар. ID)",
+                "3201910019365" to "Prime Video",
+                "3201606009684" to "Spotify"
             )
             val found = mutableListOf<AppInfo>()
+            val seenNames = mutableSetOf<String>()
             val t = token
             for ((id, name) in known) {
-                var code = restRequest("applications/$id", "GET")
+                var code = restCall("http", 8001, "applications/$id", "GET")
                 if (code == 401 && !t.isNullOrBlank()) {
-                    code = restRequest("applications/$id?token=$t", "GET")
+                    code = restCall("http", 8001, "applications/$id?token=$t", "GET")
                 }
-                if (code in 200..299) {
-                    found.add(AppInfo(id, name))
-                    log("✔ $name установлен (HTTP $code)")
+                var code2 = -1
+                if (code !in 200..299) {
+                    code2 = restCall("https", 8002, "applications/$id", "GET")
+                    if (code2 == 401 && !t.isNullOrBlank()) {
+                        code2 = restCall("https", 8002, "applications/$id?token=$t", "GET")
+                    }
+                }
+                if (code in 200..299 || code2 in 200..299) {
+                    val clean = name.substringBefore(" (")
+                    if (seenNames.add(clean)) found.add(AppInfo(id, clean))
+                    log("✔ $name установлен (HTTP ${if (code in 200..299) code else code2})")
                 }
             }
             if (found.isNotEmpty()) {
                 onApps(found)
-                log("Найдено установленных: ${found.size} из ${known.size} проверенных")
+                log("Найдено установленных: ${found.size}")
             } else {
-                log("REST-проверка ничего не нашла — ТВ не отвечает и на REST (коды выше)")
+                log("Ни один ID не ответил 200 — пришлите журнал целиком: по кодам будет видно, жив ли REST на этой прошивке")
             }
         }.start()
     }
 
-    /** Простой REST-запрос к ТВ (порт 8001). Возвращает HTTP-код, -1 при сетевой ошибке. */
-    private fun restRequest(route: String, method: String): Int {
+    /**
+     * REST-запрос к ТВ через OkHttp (он настроен доверять самоподписанному
+     * сертификату ТВ — важно для https:8002). Каждый вызов пишет в журнал строку вида
+     * «↳ HTTP 404 ← http:8001 GET applications/...» — для диагностики.
+     * Возвращает HTTP-код, -1 при сетевой ошибке.
+     */
+    private fun restCall(scheme: String, port: Int, route: String, method: String): Int {
         return try {
-            val conn = URL("http://$host:8001/api/v2/$route").openConnection() as HttpURLConnection
-            conn.requestMethod = method
-            conn.connectTimeout = 4000
-            conn.readTimeout = 4000
-            val code = conn.responseCode
-            conn.disconnect()
-            code
+            val postBody: RequestBody? = if (method == "POST") ByteArray(0).toRequestBody() else null
+            val request = Request.Builder()
+                .url("$scheme://$host:$port/api/v2/$route")
+                .method(method, postBody)
+                .build()
+            client.newCall(request).execute().use { resp ->
+                val code = resp.code
+                val body = resp.body?.string() ?: ""
+                val bodyPart = if (body.isNotBlank()) " :: " + body.take(140) else ""
+                log("↳ HTTP $code ← $scheme:$port $method /api/v2/$route$bodyPart")
+                code
+            }
         } catch (e: Exception) {
-            log("!! REST $method /$route: ${e.message}")
+            log("!! REST $method $scheme:$port/$route: ${e.message}")
             -1
         }
     }

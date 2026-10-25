@@ -265,7 +265,7 @@
                     android:layout_weight="1"
                     android:layout_margin="2dp"
                     android:onClick="onAppClick"
-                    android:tag="11101200001"
+                    android:tag="111299001912"
                     android:text="YouTube" />
                 <Button
                     android:layout_width="match_parent"
@@ -273,7 +273,7 @@
                     android:layout_weight="1"
                     android:layout_margin="2dp"
                     android:onClick="onAppClick"
-                    android:tag="org.tizen.netflixapp"
+                    android:tag="11101200001"
                     android:text="Netflix" />
             </TableRow>
         </TableLayout>
