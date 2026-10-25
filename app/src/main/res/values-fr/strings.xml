@@ -389,4 +389,8 @@
     <string name="wol_answered">✔ Le TV a répondu après Wake-on-LAN</string>
     <string name="wol_sending">"Le TV ne répond pas — envoi d'un Wake-on-LAN…"</string>
     <string name="ws_launch_fallback">"Lancement WS non confirmé — j'essaie REST POST (port 8001, puis 8002)"</string>
+    <!-- v3.6: выбор языка в настройках -->
+    <string name="lang_title">Langue</string>
+    <string name="lang_sys">Par défaut (système)</string>
+    <string name="lang_applied">Langue modifiée</string>
 </resources>

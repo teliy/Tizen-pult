@@ -146,7 +146,7 @@ object ThemeEngine {
         }
         if (theme != BASIC) {
             when (v.id) {
-                R.id.cardTv, R.id.cardTheme, R.id.cardApp -> styleCard(v, theme)
+                R.id.cardTv, R.id.cardTheme, R.id.cardLang, R.id.cardApp -> styleCard(v, theme)
             }
         }
         if (v is ViewGroup) {

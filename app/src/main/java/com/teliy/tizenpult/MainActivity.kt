@@ -63,11 +63,20 @@ class MainActivity : AppCompatActivity() {
     /** v3.3: подавление срабатывания спиннера ТВ при программной установке */
     private var suppressPicker = false
 
+    /** v3.6: язык, на котором создан экран (смена в настройках → recreate) */
+    private var appliedLang = ""
+
+    /** v3.6: язык, выбранный в настройках, — применяется к ресурсам активити */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(L10n.wrap(newBase))
+    }
+
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         // v3.1: тема применяется до super.onCreate/setContentView
         prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
         L10n.init(applicationContext) // v3.5: строки вне активити (SamsungRemote и др.)
+        appliedLang = L10n.lang(this) // v3.6: для сравнения при возврате из настроек
         appliedTheme = ThemeEngine.current(prefs)
         ThemeEngine.applyTheme(this, prefs)
         super.onCreate(savedInstanceState)
@@ -109,6 +118,11 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        // v3.6: язык сменился в настройках — пересобираем экран пульта на новом языке
+        if (L10n.lang(this) != appliedLang) {
+            recreate() // appliedLang заново проставится в onCreate
+            return
+        }
         // v3.1: тема сменилась в настройках — пересобираем экран пульта
         val theme = ThemeEngine.current(prefs)
         if (theme != appliedTheme) {

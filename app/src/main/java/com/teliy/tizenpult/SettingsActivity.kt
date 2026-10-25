@@ -40,6 +40,7 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var statusView: TextView
     private lateinit var tvSpinner: Spinner
     private lateinit var ipInput: EditText
+    private lateinit var langSpinner: Spinner // v3.6
 
     /** APK, ожидающий установки после выдачи разрешения «неизвестные приложения» */
     private var pendingInstall: File? = null
@@ -47,6 +48,14 @@ class SettingsActivity : AppCompatActivity() {
     private data class TvOption(val label: String, val ip: String)
     private var tvOptions: List<TvOption> = emptyList()
     private var suppressSpin = false
+
+    /** v3.6: подавление срабатывания спиннера языка при программной установке */
+    private var suppressLang = false
+
+    /** v3.6: язык, выбранный в настройках, — применяется к ресурсам активити */
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(L10n.wrap(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         prefs = getSharedPreferences("tizenpult", Context.MODE_PRIVATE)
@@ -69,6 +78,8 @@ class SettingsActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
         findViewById<Button>(R.id.btnMacSave).setOnClickListener { saveMac() }
         findViewById<TextView>(R.id.versionView).text = getString(R.string.version_fmt, currentVersionName())
+        langSpinner = findViewById(R.id.langSpinner) // v3.6
+        setupLangSpinner()
 
         // Выбор ТВ из истории/поиска — сохраняем сразу, подключение сделает пульт
         tvSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -265,6 +276,38 @@ class SettingsActivity : AppCompatActivity() {
     }
 
     private data class ColorSelected(val basic: Int, val glass: Int, val neu: Int)
+
+    // ---------- Язык (v3.6) ----------
+
+    /**
+     * Спиннер языка: пункты — названия языков на самих языках (English / Русский / …),
+     * первый пункт — «Системный» (переводится). Выбор сохраняется в prefs «lang»
+     * и пересобирает настройки сразу; пульт обновится при возврате (onResume).
+     */
+    private fun setupLangSpinner() {
+        val entries = resources.getStringArray(R.array.lang_entries)
+        val values = resources.getStringArray(R.array.lang_values)
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, entries)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        langSpinner.adapter = adapter
+        val cur = prefs.getString("lang", "sys") ?: "sys"
+        suppressLang = true
+        langSpinner.setSelection(values.indexOf(cur).coerceAtLeast(0))
+        // onItemSelected приходит после отрисовки — снимаем блокировку позже
+        langSpinner.post { suppressLang = false }
+        langSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (suppressLang) return
+                val code = values.getOrNull(pos) ?: return
+                if (code == (prefs.getString("lang", "sys") ?: "sys")) return
+                prefs.edit().putString("lang", code).apply()
+                toast(getString(R.string.lang_applied))
+                recreate() // настройки сразу на выбранном языке
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
+    }
 
     // ---------- Приложение ----------
 

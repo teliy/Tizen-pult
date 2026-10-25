@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v3.6: выбор языка в настройках. Названия языков НЕ переводятся —
+     каждый виден на своём языке; первый пункт берётся из lang_sys
+     («Системный» / System default) и переводится обычным порядком. -->
+<resources>
+    <string-array name="lang_entries" translatable="false">
+        <item>@string/lang_sys</item>
+        <item>English</item>
+        <item>Русский</item>
+        <item>Español</item>
+        <item>Deutsch</item>
+        <item>Français</item>
+    </string-array>
+
+    <string-array name="lang_values" translatable="false">
+        <item>sys</item>
+        <item>en</item>
+        <item>ru</item>
+        <item>es</item>
+        <item>de</item>
+        <item>fr</item>
+    </string-array>
+</resources>
