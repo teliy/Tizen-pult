@@ -288,5 +288,22 @@
             android:layout_marginTop="4dp"
             android:text="Журнал связи с ТВ (лог)" />
 
+        <!-- Проверка обновлений: GitHub Releases -> скачивание -> установка -->
+        <Button
+            android:id="@+id/btnUpdate"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="Проверить обновления приложения" />
+
+        <TextView
+            android:id="@+id/versionView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:paddingTop="2dp"
+            android:text="Версия 1.9"
+            android:textSize="12sp" />
+
     </LinearLayout>
 </ScrollView>

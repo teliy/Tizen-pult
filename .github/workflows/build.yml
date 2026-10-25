@@ -1,9 +1,13 @@
 name: Build APK
 
-# Сборка при каждом пуше и по кнопке Run workflow
+# Сборка при каждом пуше и по кнопке Run workflow;
+# при пуше тега v* — сборка + автоматический Release с APK
 on:
   push:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -33,3 +37,18 @@ jobs:
           name: Tizen-pult-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      - name: Публикация Release (только при пуше тега v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          cp app/build/outputs/apk/debug/app-debug.apk "Tizen-Pult-${TAG}.apk"
+          gh release create "$TAG" "Tizen-Pult-${TAG}.apk" \
+            --title "Tizen-Pult ${TAG}" \
+            --notes "Автоматическая сборка из ветки main (${GITHUB_SHA::7}).
+
+          Установка: скачать APK и открыть его на телефоне.
+          Обновление внутри приложения: кнопка «Проверить обновления»." \
+            --repo "${GITHUB_REPOSITORY}"

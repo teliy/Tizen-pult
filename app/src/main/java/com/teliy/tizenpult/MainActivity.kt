@@ -4,9 +4,13 @@ import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Typeface
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
@@ -18,7 +22,9 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.FileProvider
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
@@ -34,6 +40,9 @@ class MainActivity : AppCompatActivity() {
     private val logLines = ArrayDeque<String>()
     private var logDialogText: TextView? = null
     private var logDialogScroll: ScrollView? = null
+
+    /** APK, ожидающий установки после выдачи разрешения «неизвестные приложения» */
+    private var pendingInstall: File? = null
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,6 +60,8 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.btnSendText).setOnClickListener { sendText() }
         findViewById<Button>(R.id.btnApps).setOnClickListener { openApps() }
         findViewById<Button>(R.id.btnLog).setOnClickListener { openLogDialog() }
+        findViewById<Button>(R.id.btnUpdate).setOnClickListener { checkUpdate() }
+        findViewById<TextView>(R.id.versionView).text = "Версия ${currentVersionName()}"
 
         val btnPowerOn = findViewById<Button>(R.id.btnPowerOn)
         btnPowerOn.setOnClickListener { powerOn() }
@@ -62,6 +73,15 @@ class MainActivity : AppCompatActivity() {
 
         // Автопоиск ТВ и подключение при запуске приложения
         findTv(manual = false)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Возврат из настроек «установка неизвестных приложений» — продолжаем установку
+        val f = pendingInstall ?: return
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) return
+        pendingInstall = null
+        if (f.exists()) startInstall(f)
     }
 
     /** Кнопки с андроид:tag="KEY_..." в разметке обрабатываются здесь */
@@ -165,6 +185,126 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun openApps() = sendOrToast { requestApps() }
+
+    // ---------- Обновление приложения ----------
+
+    private fun currentVersionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    } catch (_: Exception) {
+        "?"
+    }
+
+    /** Кнопка «Проверить обновления»: GitHub API → сравнение версий → диалог */
+    private fun checkUpdate() {
+        statusView.text = "Проверка обновлений…"
+        Thread {
+            try {
+                val rel = UpdateChecker.fetchLatest()
+                val cur = currentVersionName()
+                if (!UpdateChecker.isNewer(rel.version, cur)) {
+                    runOnUiThread {
+                        statusView.text = "Обновлений нет"
+                        AlertDialog.Builder(this)
+                            .setTitle("У вас актуальная версия")
+                            .setMessage("Установлена версия $cur.\nПоследний релиз на GitHub: ${rel.tag}.")
+                            .setPositiveButton("OK", null)
+                            .show()
+                    }
+                    return@Thread
+                }
+                if (rel.apkUrl.isNullOrBlank()) {
+                    runOnUiThread {
+                        statusView.text = "В релизе ${rel.tag} нет APK-файла"
+                        toast("В релизе ${rel.tag} нет APK-файла")
+                    }
+                    return@Thread
+                }
+                val url = rel.apkUrl
+                val mb = rel.apkSize / 1048576f
+                runOnUiThread {
+                    AlertDialog.Builder(this)
+                        .setTitle("Доступно обновление ${rel.version}")
+                        .setMessage(
+                            "Установлена версия $cur.\n" +
+                            "Новая версия: ${rel.version} (${String.format(Locale.getDefault(), "%.1f", mb)} МБ).\n\n" +
+                            "Скачать с GitHub и установить?"
+                        )
+                        .setPositiveButton("Скачать и установить") { _, _ -> downloadAndInstall(url, rel.version) }
+                        .setNegativeButton("Позже", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    statusView.text = "Ошибка проверки обновлений"
+                    AlertDialog.Builder(this)
+                        .setTitle("Не удалось проверить обновления")
+                        .setMessage("${e.message}\n\nПроверьте интернет и попробуйте ещё раз.")
+                        .setPositiveButton("OK", null)
+                        .show()
+                }
+            }
+        }.start()
+    }
+
+    /** Скачивание APK в папку приложения с прогрессом в строке статуса */
+    private fun downloadAndInstall(url: String, version: String) {
+        statusView.text = "Скачивание v$version…"
+        Thread {
+            try {
+                val dest = File(getExternalFilesDir(null), "update-$version.apk")
+                UpdateChecker.download(url, dest) { done, total ->
+                    val mb = 1048576f
+                    val txt = if (total > 0)
+                        String.format(Locale.getDefault(), "Скачивание v%s: %.1f / %.1f МБ", version, done / mb, total / mb)
+                    else
+                        String.format(Locale.getDefault(), "Скачивание v%s: %.1f МБ", version, done / mb)
+                    runOnUiThread { statusView.text = txt }
+                }
+                pendingInstall = dest
+                runOnUiThread {
+                    statusView.text = "Скачано ${dest.name} — запускаю установку"
+                    startInstall(dest)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    statusView.text = "Ошибка скачивания: ${e.message}"
+                    toast("Ошибка скачивания: ${e.message}")
+                }
+            }
+        }.start()
+    }
+
+    /** Запуск системного установщика APK через FileProvider */
+    private fun startInstall(apk: File) {
+        // Android 8+: требуется разрешение «устанавливать неизвестные приложения».
+        // После возврата из настроек установка продолжится в onResume().
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            pendingInstall = apk
+            toast("Разрешите установку для Tizen-Пульт в открывшихся настройках")
+            try {
+                startActivity(
+                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))
+                )
+            } catch (_: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES))
+                } catch (e: Exception) {
+                    toast("Откройте: Настройки → Приложения → Tizen-Пульт → Устанавливать неизвестные приложения")
+                }
+            }
+            return
+        }
+        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", apk)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        try {
+            startActivity(intent)
+        } catch (e: Exception) {
+            toast("Не удалось запустить установщик: ${e.message}")
+        }
+    }
 
     private fun showApps(apps: List<SamsungRemote.AppInfo>) {
         if (apps.isEmpty()) {
