@@ -10,7 +10,6 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.text.InputType
-import android.util.TypedValue
 import android.view.DragEvent
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -247,7 +246,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Рамка режима расстановки вокруг блока (цвет — colorPrimary темы) */
+    /** Рамка режима расстановки вокруг блока (цвет — акцент темы) */
     private fun applyUnitChrome(u: View, on: Boolean) {
         val d = u.resources.displayMetrics.density
         if (!on) {
@@ -255,9 +254,7 @@ class MainActivity : AppCompatActivity() {
             u.setPadding(0, 0, 0, 0)
             return
         }
-        val tv = TypedValue()
-        val color = if (theme.resolveAttribute(R.attr.colorPrimary, tv, true)) tv.data
-        else 0xFF5B6CF0.toInt()
+        val color = ThemeEngine.accent(prefs)
         u.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = 8f * d
