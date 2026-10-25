@@ -11,8 +11,8 @@ android {
         applicationId "com.teliy.tizenpult"
         minSdk 24
         targetSdk 34
-        versionCode 12
-        versionName "2.1"
+        versionCode 13
+        versionName "2.2"
     }
 
     // Фиксированный ключ подписи в репозитории: все сборки CI взаимно совместимы,

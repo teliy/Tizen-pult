@@ -53,20 +53,21 @@ class MainActivity : AppCompatActivity() {
         val ip: String,
         val name: String,
         val model: String,
-        val lastSeen: Long
+        val lastSeen: Long,
+        val legacy: Boolean = false
     )
 
     // ---------- Выбор ТВ сверху ----------
 
     /** Строка выпадающего списка телевизоров */
-    private data class TvOption(val label: String, val ip: String, val supported: Boolean)
+    private data class TvOption(val label: String, val ip: String)
 
     private lateinit var tvSpinner: Spinner
     private var tvOptions: List<TvOption> = emptyList()
     private var suppressSpin = false
 
-    /** Старые Samsung (2014 и т.п.), найденные последним поиском — не подключаются */
-    private var lastUnsupported: List<TvDiscovery.Result> = emptyList()
+    /** Идет ли сейчас подключение (защита от двойных тапов) */
+    @Volatile private var connecting = false
 
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,10 +91,6 @@ class MainActivity : AppCompatActivity() {
                     findTv(manual = true)
                     return
                 }
-                if (!opt.supported) {
-                    showUnsupportedDialog(opt)
-                    return
-                }
                 prefs.edit().putString("host", opt.ip).apply()
                 ipInput.setText(opt.ip)
                 connectToHost(opt.ip)
@@ -111,7 +108,7 @@ class MainActivity : AppCompatActivity() {
         findViewById<TextView>(R.id.versionView).text = "Версия ${currentVersionName()}"
 
         val btnPowerOn = findViewById<Button>(R.id.btnPowerOn)
-        btnPowerOn.setOnClickListener { powerOn() }
+        btnPowerOn.setOnClickListener { pressPower() }
         // Долгое нажатие — ручной ввод MAC (если REST выдал «Unknown» или закрыт)
         btnPowerOn.setOnLongClickListener {
             askMac()
@@ -193,13 +190,12 @@ class MainActivity : AppCompatActivity() {
                 val saved = prefs.getString("host", null)
                 if (!mac.isNullOrBlank() && !saved.isNullOrBlank()) {
                     runOnUiThread { statusView.text = "ТВ не отвечает — отправляю Wake-on-LAN…" }
-                    SamsungRemote.wakeOnLan(mac)
+                    SamsungRemote.wakeOnLan(mac, saved.substringBeforeLast('.') + ".255")
                     Thread.sleep(5000)
                     val r = TvDiscovery.verify(saved, 2000)
                     if (r != null) {
                         report = TvDiscovery.Report(
                             listOf(r.copy(source = "после Wake-on-LAN")),
-                            emptyList(),
                             listOf("WoL: ТВ проснулся и ответил ($saved)")
                         )
                         runOnUiThread { appendLog(report.log.first()) }
@@ -208,7 +204,6 @@ class MainActivity : AppCompatActivity() {
             }
 
             rememberFound(report.found)
-            lastUnsupported = report.unsupported
 
             runOnUiThread {
                 when {
@@ -239,7 +234,7 @@ class MainActivity : AppCompatActivity() {
         val hist = loadKnown()
         for (r in found) {
             hist.removeAll { it.ip == r.ip }
-            hist.add(0, KnownTv(r.ip, r.name, r.model, now))
+            hist.add(0, KnownTv(r.ip, r.name, r.model, now, r.legacy))
         }
         saveKnown(hist.distinctBy { it.ip }.take(20))
     }
@@ -248,7 +243,7 @@ class MainActivity : AppCompatActivity() {
         val arr = JSONArray(prefs.getString("knownTvs", "[]") ?: "[]")
         (0 until arr.length()).map {
             val x = arr.getJSONObject(it)
-            KnownTv(x.getString("ip"), x.optString("name"), x.optString("model"), x.optLong("lastSeen"))
+            KnownTv(x.getString("ip"), x.optString("name"), x.optString("model"), x.optLong("lastSeen"), x.optBoolean("legacy"))
         }.toMutableList()
     } catch (_: Exception) {
         mutableListOf()
@@ -262,14 +257,15 @@ class MainActivity : AppCompatActivity() {
                 put("name", k.name)
                 put("model", k.model)
                 put("lastSeen", k.lastSeen)
+                put("legacy", k.legacy)
             })
         }
         prefs.edit().putString("knownTvs", arr.toString()).apply()
     }
 
     /**
-     * Пересобирает выпадающий список ТВ сверху:
-     * рабочие ТВ (найденные сейчас + история), затем старые (не поддерживаются).
+     * Пересобирает выпадающий список ТВ сверху: все найденные/сохранённые ТВ —
+     * и Tizen, и старые (2011–2015) — со всеми подключаемы по своему протоколу.
      */
     private fun refreshTvSpinner(selectIp: String? = null) {
         val opts = mutableListOf<TvOption>()
@@ -277,22 +273,12 @@ class MainActivity : AppCompatActivity() {
         for (k in loadKnown()) {
             if (seen.add(k.ip)) {
                 val mark = if (selectIp == k.ip) "▸ " else ""
-                opts.add(TvOption("$mark${k.name} — ${k.model.ifBlank { "Samsung" }} — ${k.ip}", k.ip, true))
-            }
-        }
-        for (r in lastUnsupported) {
-            if (seen.add(r.ip)) {
-                opts.add(
-                    TvOption(
-                        "${r.name} — ${r.model.ifBlank { "Samsung" }} — ${r.ip} — старая модель, не поддерживается",
-                        r.ip,
-                        false
-                    )
-                )
+                val old = if (k.legacy) " — старый протокол" else ""
+                opts.add(TvOption("$mark${k.name} — ${k.model.ifBlank { "Samsung" }} — ${k.ip}$old", k.ip))
             }
         }
         if (opts.isEmpty()) {
-            opts.add(TvOption("ТВ не найден — нажмите «Найти»", "", false))
+            opts.add(TvOption("ТВ не найден — нажмите «Найти»", ""))
         }
         tvOptions = opts
 
@@ -306,43 +292,102 @@ class MainActivity : AppCompatActivity() {
         tvSpinner.post { suppressSpin = false }
     }
 
-    /** Старые ТВ (2014 и раньше): у них другой протокол — объясняем, но даём попробовать */
-    private fun showUnsupportedDialog(opt: TvOption) {
-        AlertDialog.Builder(this)
-            .setTitle("ТВ со старым протоколом")
-            .setMessage(
-                "${opt.label}\n\nЭта модель отвечает только по старому протоколу Samsung " +
-                    "(до 2015 года). Этот пульт управляет ТВ с Tizen (2016 и новее)."
-            )
-            .setPositiveButton("Понятно", null)
-            .setNeutralButton("Всё равно попробовать") { _, _ ->
-                ipInput.setText(opt.ip)
-                prefs.edit().putString("host", opt.ip).apply()
-                connectToHost(opt.ip)
+    /**
+     * Подключение с автоопределением протокола:
+     *  - wss:8002 с токеном — Tizen 2018+ (UE43AU9000 и другие новые);
+     *  - ws:8001 без TLS — Tizen 2016–2017 и часть моделей 2014–2015;
+     *  - legacy TCP:55000 — Smart TV 2011–2015 (UE48H6800 и т.п.), обычный и AES.
+     * Проверяем открытые порты, пробуем по порядку (сохранённый — первым),
+     * рабочий протокол запоминается в prefs «proto:<ip>».
+     */
+    private fun connectToHost(host: String) {
+        if (connecting) {
+            runOnUiThread { statusView.text = "Подключение уже идет…" }
+            return
+        }
+        connecting = true
+        Thread {
+            try {
+                runOnUiThread {
+                    statusView.text = "Подключение к $host…"
+                    if (logLines.isNotEmpty()) appendLog("— новый сеанс —")
+                }
+
+                // 1. Какие порты вообще открыты на этом ТВ
+                val p8002 = TvDiscovery.portOpen(host, 8002, 1500)
+                val p8001 = TvDiscovery.portOpen(host, 8001, 1500)
+                val p55000 = TvDiscovery.portOpen(host, 55000, 1500)
+                runOnUiThread {
+                    appendLog("порты ТВ: 8002=$p8002 (Tizen TLS), 8001=$p8001 (Tizen), 55000=$p55000 (старый)")
+                }
+
+                // 2. Порядок проб: сохранённый протокол — первым, затем остальные открытые
+                val caps = mutableListOf<String>()
+                if (p8002) caps.add("wss")
+                if (p8001) caps.add("ws")
+                if (p55000) {
+                    caps.add("legacy")
+                    caps.add("legacy-aes")
+                }
+                val saved = prefs.getString("proto:$host", null)
+                if (!saved.isNullOrBlank() && caps.remove(saved)) caps.add(0, saved)
+
+                // 3. Пробуем по очереди, пока какой-нибудь не подключится
+                for (proto in caps) {
+                    if (tryProto(host, proto)) {
+                        prefs.edit().putString("proto:$host", proto).apply()
+                        runOnUiThread {
+                            appendLog("✔ рабочий протокол: $proto — запомнен для $host")
+                        }
+                        learnMac(host) // MAC для Wake-on-LAN — на будущее
+                        return@Thread
+                    }
+                }
+                runOnUiThread {
+                    statusView.text = "Не удалось подключиться — см. журнал"
+                    appendLog("✖ ни один протокол не подключился (8002/8001/55000)")
+                }
+            } finally {
+                connecting = false
             }
-            .show()
+        }.start()
     }
 
-    private fun connectToHost(host: String) {
-        // Может вызываться из фонового потока (автопоиск) — UI трогаем только через runOnUiThread
-        runOnUiThread { statusView.text = "Подключение к $host..." }
-        remote?.close()
-        remote = SamsungRemote(
+    /** Одна попытка: создаем клиент и ждём подтверждения сеанса (до 8/30 с) */
+    private fun tryProto(host: String, proto: String): Boolean {
+        runOnUiThread {
+            appendLog("— пробую протокол $proto —")
+            statusView.text = "Подключение к $host ($proto)…"
+        }
+        val r = SamsungRemote(
             host = host,
-            token = prefs.getString("token", null),
+            proto = proto,
+            token = prefs.getString("token:$host", null) ?: prefs.getString("token", null),
             onStatus = { s -> runOnUiThread { statusView.text = s } },
-            onToken = { t ->
-                prefs.edit().putString("token", t).apply()
-            },
+            onToken = { t -> prefs.edit().putString("token:$host", t).putString("token", t).apply() },
             onApps = { apps -> runOnUiThread { showApps(apps) } },
             onLog = { s -> runOnUiThread { appendLog(s) } }
         )
-        remote?.connect()
-        fetchDeviceInfo(host)
-        runOnUiThread {
-            statusView.text = "Подключение к $host..."
-            if (logLines.isNotEmpty()) appendLog("— новый сеанс —")
+        remote?.close()
+        remote = r
+        r.connect()
+
+        val t0 = System.currentTimeMillis()
+        while (true) {
+            if (r.isConnected()) return true
+            val elapsed = System.currentTimeMillis() - t0
+            // 30 с — если транспорт жив (например, ТВ ждёт «Разрешить» на экране),
+            // 8 с — если транспорт так и не поднялся
+            if (r.isTransportAlive()) {
+                if (elapsed > 30000) break
+            } else if (elapsed > 8000) {
+                break
+            }
+            Thread.sleep(250)
         }
+        val ok = r.isConnected()
+        if (!ok) r.close()
+        return ok
     }
 
     private fun sendText() {
@@ -501,20 +546,97 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    /** Включение ТВ по Wake-on-LAN (нужен MAC: автоматом из API или вручную) */
-    private fun powerOn() {
-        val mac = prefs.getString("mac", null)
-        if (mac.isNullOrBlank()) {
-            toast("MAC неизвестен: подключитесь к ТВ или удерживайте кнопку для ввода MAC")
+    /**
+     * Кнопка POWER — умный вкл/выкл:
+     *  - сеанс с ТВ активен → выключаем (каскад KEY_POWEROFF → KEY_POWER → KEY_POWERTOGGLE,
+     *    т.к. разные прошивки принимают разные ключи; для старых ТВ — KEY_POWER);
+     *  - ТВ недоступен → Wake-on-LAN и автоматическое переподключение.
+     */
+    private fun pressPower() {
+        val host = prefs.getString("host", null) ?: ipInput.text.toString().trim()
+        if (host.isEmpty()) {
+            toast("Сначала выберите или найдите ТВ")
             return
         }
-        statusView.text = "Отправка Wake-on-LAN на $mac..."
+        val r = remote
+        if (r != null && r.isConnected()) {
+            r.powerOffSmart()
+            return
+        }
+        wakeTv(host)
+    }
+
+    /** Включение ТВ: Wake-on-LAN (MAC — из API/ARP-кэша/вручную) + автоподключение */
+    private fun wakeTv(host: String) {
+        statusView.text = "ТВ не отвечает — включаю по сети…"
         Thread {
-            val ok = SamsungRemote.wakeOnLan(mac)
+            var mac = prefs.getString("mac", null)
+            if (mac.isNullOrBlank()) mac = learnMac(host)
+            if (mac.isNullOrBlank()) {
+                runOnUiThread {
+                    statusView.text = "MAC-адрес ТВ неизвестен"
+                    toast("MAC неизвестен. Подключитесь к ТВ — MAC сохранится автоматически (или удерживайте POWER для ввода MAC)")
+                }
+                return@Thread
+            }
+            runOnUiThread { statusView.text = "Включаю ТВ (Wake-on-LAN → $mac)…" }
+            SamsungRemote.wakeOnLan(mac, host.substringBeforeLast('.') + ".255")
+            var awake = false
+            for (i in 1..10) {
+                Thread.sleep(1500)
+                if (TvDiscovery.verify(host, 1200) != null) {
+                    awake = true
+                    break
+                }
+            }
             runOnUiThread {
-                statusView.text = if (ok) "WoL отправлен — подождите 2–5 секунд" else "Ошибка отправки WoL"
+                if (awake) {
+                    statusView.text = "ТВ проснулся — подключаюсь…"
+                    appendLog("✔ ТВ ответил после Wake-on-LAN")
+                    connectToHost(host)
+                } else {
+                    statusView.text = "ТВ не проснулся"
+                    appendLog("✖ WoL отправлен ($mac), но ТВ не отвечает 15 с. На ТВ включите: Настройки → Общие → Сеть → Пробуждение по сети")
+                    toast("ТВ не проснулся — включите на ТВ «Пробуждение по сети» (Wake-on-Network)")
+                }
             }
         }.start()
+    }
+
+    /**
+     * MAC ТВ для Wake-on-LAN: сначала REST /api/v2/ (device.wifiMac),
+     * если прошивка не отдала — ARP-кэш телефона (запись появляется после
+     * любого TCP-контакта с ТВ). Найденный MAC сохраняется.
+     */
+    private fun learnMac(host: String): String? {
+        try {
+            val conn = URL("http://$host:8001/api/v2/").openConnection() as HttpURLConnection
+            conn.connectTimeout = 3000
+            conn.readTimeout = 3000
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val mac = JSONObject(body).getJSONObject("device").optString("wifiMac")
+            if (mac.isNotBlank() && mac != "Unknown" && mac.contains(":")) {
+                prefs.edit().putString("mac", mac).apply()
+                return mac
+            }
+        } catch (_: Exception) {
+        }
+        try {
+            val arp = File("/proc/net/arp").readText()
+            for (line in arp.split('\n')) {
+                val parts = line.trim().split(Regex("\\s+"))
+                if (parts.size >= 4 && parts[0] == host &&
+                    parts[3].contains(":") && parts[3] != "00:00:00:00:00:00"
+                ) {
+                    prefs.edit().putString("mac", parts[3]).apply()
+                    runOnUiThread { appendLog("MAC ТВ из ARP-кэша: ${parts[3]}") }
+                    return parts[3]
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return null
     }
 
     private fun askMac() {
@@ -530,23 +652,6 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Отмена", null)
             .show()
-    }
-
-    /** REST /api/v2/ — определяем MAC ТВ автоматически для Wake-on-LAN */
-    private fun fetchDeviceInfo(host: String) {
-        Thread {
-            try {
-                val conn = URL("http://$host:8001/api/v2/").openConnection() as HttpURLConnection
-                conn.connectTimeout = 4000
-                conn.readTimeout = 4000
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
-                val mac = JSONObject(body).getJSONObject("device").optString("wifiMac")
-                if (mac.isNotBlank()) prefs.edit().putString("mac", mac).apply()
-            } catch (_: Exception) {
-                // REST закрыт или ТВ выключен — MAC можно ввести вручную
-            }
-        }.start()
     }
 
     /** Копирует журнал в буфер обмена — чтобы вставить его в чат для диагностики */

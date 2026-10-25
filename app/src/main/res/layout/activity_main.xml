@@ -111,20 +111,13 @@
             android:text="Сначала откройте на ТВ поле ввода (например, поиск), затем отправьте текст."
             android:textSize="12sp" />
 
-        <!-- Питание -->
+        <!-- Питание: одна кнопка — вкл (Wake-on-LAN) / выкл (каскад ключей для любой прошивки) -->
         <Button
             android:id="@+id/btnPowerOn"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:text="Включить ТВ (Wake-on-LAN, долгое нажатие — MAC)" />
-
-        <Button
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:onClick="onKeyClick"
-            android:tag="KEY_POWEROFF"
-            android:text="Выключить (POWER)" />
+            android:text="POWER — вкл/выкл ТВ (удерживать — MAC)" />
 
         <!-- Громкость и каналы -->
         <TableLayout
@@ -304,7 +297,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingTop="8dp"
-            android:text="Первое подключение: ТВ покажет запрос — нажмите «Разрешить» на экране ТВ."
+            android:text="Первое подключение: ТВ покажет запрос — нажмите «Разрешить» на экране ТВ. Старые ТВ (2011–2015) подключаются через порт 55000 — на ТВ может появиться окно подтверждения."
             android:textSize="12sp" />
 
         <!-- Журнал связи с ТВ (открывается в отдельном окне, не прыгает) -->
@@ -329,7 +322,7 @@
             android:layout_height="wrap_content"
             android:gravity="center"
             android:paddingTop="2dp"
-            android:text="Версия 2.1"
+            android:text="Версия 2.2"
             android:textSize="12sp" />
 
     </LinearLayout>

@@ -26,13 +26,18 @@ import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
 /**
- * Клиент Samsung TV Remote API (WebSocket, порт 8002, TLS).
+ * Клиент Samsung TV Remote API.
  *
- * Совместим с Tizen 5.5 (модели 2021, например UE43AU9000) и новее.
+ * Поддерживаемые протоколы (proto):
+ *  - «wss» — wss://host:8002 с токеном: Tizen 2018+ (UE43AU9000 и другие новые);
+ *  - «ws»  — ws://host:8001 без TLS: Tizen 2016–2017, часть моделей 2014–2015;
+ *  - «legacy» / «legacy-aes» — TCP 55000: Smart TV 2011–2015 (см. LegacyRemote).
+ *
  * Все входящие/исходящие кадры дублируются в onLog — для диагностики на экране.
  */
 class SamsungRemote(
     private val host: String,
+    private val proto: String = "wss",
     private val token: String?,
     private val onStatus: (String) -> Unit,
     private val onToken: (String) -> Unit,
@@ -42,6 +47,17 @@ class SamsungRemote(
     data class AppInfo(val appId: String, val name: String)
 
     private var ws: WebSocket? = null
+    private var legacy: LegacyRemote? = null
+
+    /** Сеанс подтверждён ТВ (ms.channel.connect / handshake 55000) */
+    @Volatile private var connected = false
+
+    /** Транспорт открыт (WS upgrade / TCP 55000) — можно ждать «Разрешить» на ТВ */
+    @Volatile private var transportAlive = false
+
+    fun isConnected(): Boolean = connected
+    fun isTransportAlive(): Boolean = transportAlive
+    private fun isLegacy(): Boolean = proto == "legacy" || proto == "legacy-aes"
 
     // Состояние сеанса (читаются/пишутся из фоновых потоков)
     @Volatile private var launchAck = false         // ТВ подтвердил ed.apps.launch
@@ -80,21 +96,43 @@ class SamsungRemote(
         }
 
     fun connect() {
-        val name = Base64.encodeToString("Tizen Pult".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-        var url = "wss://$host:8002/api/v2/channels/samsung.remote.control?name=$name"
-        val withToken = !token.isNullOrBlank()
-        if (withToken) url += "&token=$token"
-
         launchAck = false
         appsReceived = false
         imeSeen = false
         textBroadcastSent = false
 
-        log(if (withToken) "Подключение к wss://$host:8002 (с сохранённым токеном)" else "Подключение к wss://$host:8002 (без токена — ТВ покажет запрос)")
+        if (isLegacy()) {
+            val lr = LegacyRemote(
+                host = host,
+                encrypted = proto == "legacy-aes",
+                onStatus = onStatus,
+                onLog = onLog,
+                onAuth = { ok -> connected = ok },
+                onTransport = { up -> transportAlive = up },
+                onClosed = {
+                    connected = false
+                    transportAlive = false
+                    onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
+                }
+            )
+            legacy = lr
+            lr.connect()
+            return
+        }
+
+        val scheme = if (proto == "ws") "ws" else "wss"
+        val port = if (proto == "ws") 8001 else 8002
+        val name = Base64.encodeToString("Tizen Pult".toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        var url = "$scheme://$host:$port/api/v2/channels/samsung.remote.control?name=$name"
+        val withToken = !token.isNullOrBlank()
+        if (withToken) url += "&token=$token"
+
+        log(if (withToken) "Подключение к $scheme://$host:$port (с сохранённым токеном)" else "Подключение к $scheme://$host:$port (без токена — ТВ покажет запрос)")
 
         val request = Request.Builder().url(url).build()
         ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                transportAlive = true
                 log("WS открыт: HTTP ${response.code}")
                 onStatus("Соединение открыто, ждём ответ ТВ...")
             }
@@ -115,10 +153,14 @@ class SamsungRemote(
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 log("WS закрыт: code=$code")
-                onStatus("Отключено — нажмите «Подключ.» для повторного сеанса")
+                connected = false
+                transportAlive = false
+                onStatus("Отключено — нажмите POWER (вкл/выкл) или «Подключ.»")
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                connected = false
+                transportAlive = false
                 val reason = t.message ?: "нет соединения"
                 log("✖ Ошибка WS: $reason")
                 onStatus("Ошибка: $reason")
@@ -129,6 +171,7 @@ class SamsungRemote(
     private fun handleMessage(obj: JSONObject) {
         when (obj.optString("event")) {
             "ms.channel.connect" -> {
+                connected = true
                 val t = obj.optJSONObject("data")?.optString("token")
                 if (!t.isNullOrBlank()) {
                     log("✔ Авторизация пройдена, токен получен (${t.take(3)}...) и сохранён")
@@ -138,6 +181,7 @@ class SamsungRemote(
             }
 
             "ms.channel.unauthorized" -> {
+                connected = false
                 log("ТВ отклонил доступ (unauthorized)")
                 onStatus("Нажмите «Подключ.» ещё раз и выберите «Разрешить» на ТВ")
             }
@@ -224,6 +268,10 @@ class SamsungRemote(
 
     /** Нажатие кнопки пульта, например KEY_VOLUP, KEY_POWER, KEY_HDMI */
     fun sendKey(key: String) {
+        if (isLegacy()) {
+            legacy?.sendKey(key)
+            return
+        }
         send(JSONObject().apply {
             put("method", "ms.remote.control")
             put("params", JSONObject().apply {
@@ -247,6 +295,11 @@ class SamsungRemote(
      * фокусе). Открытие/закрытие видно в журнале: ⌨ ms.remote.imeStart / ms.remote.imeEnd.
      */
     fun sendTextSmart(text: String) {
+        if (isLegacy()) {
+            log("Ввод текста недоступен по старому протоколу (55000)")
+            onStatus("На старых ТВ (до 2016) ввод текста недоступен")
+            return
+        }
         if (text.isEmpty()) return
         Thread {
             val b64 = Base64.encodeToString(text.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
@@ -292,6 +345,11 @@ class SamsungRemote(
      * Подтверждение ТВ — ответное событие ed.apps.launch с кодом 200.
      */
     fun launchApp(appId: String) {
+        if (isLegacy()) {
+            log("Запуск приложений недоступен по старому протоколу (55000)")
+            onStatus("На старых ТВ (до 2016) запуск приложений недоступен")
+            return
+        }
         launchAck = false
         sendLaunchWs(appId, "DEEP_LINK")
         Thread {
@@ -358,6 +416,12 @@ class SamsungRemote(
      * REST-список из 2 приложений («fetchable») перекрывал всё остальное.
      */
     fun requestApps() {
+        if (isLegacy()) {
+            log("Старый протокол (55000) не отдаёт список приложений — доступны кнопки пульта")
+            onStatus("На старых ТВ (до 2016) список приложений недоступен")
+            onApps(emptyList())
+            return
+        }
         appsReceived = false
         val wsBuffer = mutableListOf<AppInfo>()
         pendingApps = wsBuffer
@@ -524,12 +588,47 @@ class SamsungRemote(
         }
     }
 
+    /**
+     * Умное выключение: разные прошивки принимают разные ключи.
+     * На моделях 2021+ KEY_POWER часто игнорируется — работает KEY_POWEROFF;
+     * на части новых прошивок наоборот. Отправляем по очереди и после каждой
+     * попытки проверяем, отвечает ли ТВ (REST 8001): перестал отвечать — выключился.
+     * Для старого протокола (55000) работает KEY_POWER.
+     */
+    fun powerOffSmart() {
+        if (isLegacy()) {
+            sendKey("KEY_POWER")
+            return
+        }
+        Thread {
+            for (k in listOf("KEY_POWEROFF", "KEY_POWER", "KEY_POWERTOGGLE")) {
+                log("POWER: отправляю $k…")
+                sendKey(k)
+                Thread.sleep(2500)
+                if (TvDiscovery.verify(host, 1200) == null) {
+                    log("✔ ТВ выключился (сработал $k)")
+                    onStatus("ТВ выключен — POWER снова включит его по сети")
+                    return@Thread
+                }
+                log("$k не выключил ТВ — пробую следующий ключ")
+            }
+            onStatus("ТВ не отреагировал на POWER — подробности в журнале")
+        }.start()
+    }
+
     fun close() {
+        try {
+            legacy?.close()
+        } catch (_: Exception) {
+        }
+        legacy = null
         try {
             ws?.close(1000, "bye")
         } catch (_: Exception) {
         }
         ws = null
+        connected = false
+        transportAlive = false
     }
 
     private fun unsafeClient(): OkHttpClient {
@@ -582,8 +681,10 @@ class SamsungRemote(
         /**
          * Wake-on-LAN: пробуждение ТВ из режима сна.
          * На ТВ должно быть включено: Настройки -> Общие -> Сеть -> Пробуждение по сети.
+         * Шлём 3 повтора на широковещательный адрес подсети и 255.255.255.255,
+         * порты 9 и 7 — разные роутеры/ТВ принимают разные варианты.
          */
-        fun wakeOnLan(mac: String): Boolean {
+        fun wakeOnLan(mac: String, subnetBcast: String? = null): Boolean {
             return try {
                 val macBytes = mac.split(":", "-")
                     .map { it.trim().toInt(16).toByte() }
@@ -591,13 +692,20 @@ class SamsungRemote(
                 val payload = ByteArray(6 + 16 * 6)
                 for (i in 0 until 6) payload[i] = 0xFF.toByte()
                 for (i in 0 until 16) System.arraycopy(macBytes, 0, payload, 6 + i * 6, 6)
+                val targets = mutableListOf("255.255.255.255")
+                if (!subnetBcast.isNullOrBlank()) targets.add(subnetBcast)
                 val socket = DatagramSocket()
-                val packet = DatagramPacket(
-                    payload, payload.size,
-                    InetAddress.getByName("255.255.255.255"), 9
-                )
                 socket.broadcast = true
-                socket.send(packet)
+                for (rep in 0 until 3) {
+                    for (t in targets) {
+                        for (port in intArrayOf(9, 7)) {
+                            socket.send(
+                                DatagramPacket(payload, payload.size, InetAddress.getByName(t), port)
+                            )
+                            Thread.sleep(20)
+                        }
+                    }
+                }
                 socket.close()
                 true
             } catch (e: Exception) {

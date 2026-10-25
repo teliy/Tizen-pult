@@ -26,9 +26,12 @@ import java.util.concurrent.TimeUnit
  * Порядок:
  * 1. Кандидаты: сохранённый адрес + найденные ранее (история) + SSDP + скан подсети;
  * 2. SSDP-поиск (UPnP M-SEARCH на 239.255.255.250:1900) — до 3 сек;
- * 3. Скан подсети /24 всех локальных сетей телефона по порту 8001 (TCP connect);
+ * 3. Скан подсети /24 всех локальных сетей телефона по портам 8001 (Tizen)
+ *    и 55000 (старые модели 2011–2015, TCP connect);
  * 4. Каждый кандидат проверяется GET http://IP:8001/api/v2/ — JSON с блоком
- *    "device" есть только у ТВ Samsung (оттуда же берём имя и модель).
+ *    "device" есть только у ТВ Samsung с Tizen-API (оттуда же берём имя и модель).
+ *    Кто не ответил — спрашивается по http://IP:7676/ms/1.0/ (старые Samsung 2011–2015)
+ *    или признаётся старым по открытому порту 55000.
  *
  * Каждый этап пишет строку в отчёт (журнал приложения) — по нему видно,
  * на каком шаге и почему ТВ не нашёлся.
@@ -39,19 +42,20 @@ object TvDiscovery {
         val ip: String,
         val name: String,
         val model: String,
-        val source: String   // «сохранённый адрес», «SSDP», «прошлый поиск», «скан сети»…
+        val source: String,      // «сохранённый адрес», «SSDP», «прошлый поиск», «скан сети»…
+        val legacy: Boolean = false // true — ТВ до Tizen (2011–2015), протокол TCP 55000
     )
 
     data class Report(
-        val found: List<Result>,          // ТВ, ответившие по Tizen-API прямо сейчас
-        val unsupported: List<Result>,    // ТВ Samsung со старым протоколом (2014 и т.п.)
+        val found: List<Result>,          // все найденные ТВ Samsung: и Tizen, и старые
         val log: List<String>             // подробности всех этапов — в журнал
     )
 
     class ScanOutcome {
-        val open = mutableListOf<String>()   // порт 8001 открыт
-        var refused = 0                       // хост жив, порт закрыт (быстрый «отказ»)
-        var silent = 0                        // таймаут / недостижим
+        val open8001 = mutableListOf<String>()    // Tizen-API (2014+)
+        val open55000 = mutableListOf<String>()   // старый протокол (2011–2015)
+        var refused = 0                            // хост жив, оба порта закрыты
+        var silent = 0                             // таймаут / недостижим
     }
 
     /**
@@ -71,6 +75,7 @@ object TvDiscovery {
         }
 
         val candidates = LinkedHashSet<String>()
+        val legacyIps = mutableSetOf<String>()
 
         // 1. Сохранённый адрес и найденные ранее — проверяем первыми
         if (!savedHost.isNullOrBlank() && candidates.add(savedHost)) {
@@ -102,20 +107,22 @@ object TvDiscovery {
                 val prefix = local.substringBeforeLast('.')
                 if (!donePrefixes.add(prefix)) continue
                 val t1 = System.currentTimeMillis()
-                stage("скан $prefix.1–254, порт 8001…")
+                stage("скан $prefix.1–254, порты 8001 и 55000…")
                 val scan = scanSubnet(prefix)
-                val openTxt = if (scan.open.isEmpty()) "нет" else scan.open.joinToString(", ")
+                legacyIps.addAll(scan.open55000)
+                val o1 = if (scan.open8001.isEmpty()) "нет" else scan.open8001.joinToString(", ")
+                val o5 = if (scan.open55000.isEmpty()) "нет" else scan.open55000.joinToString(", ")
                 stage(
                     "скан $prefix.x за ${System.currentTimeMillis() - t1} мс: " +
-                        "порт 8001 открыт → $openTxt, отказ → ${scan.refused}, тишина → ${scan.silent}"
+                        "8001 → $o1, 55000 → $o5, отказ → ${scan.refused}, тишина → ${scan.silent}"
                 )
-                for (ip in scan.open) candidates.add(ip)
+                for (ip in scan.open8001) candidates.add(ip)
+                for (ip in scan.open55000) candidates.add(ip)
             }
         }
 
-        // 4. Проверка всех кандидатов REST-запросом /api/v2/
+        // 4. Проверка всех кандидатов: Tizen-API, затем старые Samsung
         val found = mutableListOf<Result>()
-        val unsupported = mutableListOf<Result>()
         for (ip in candidates) {
             onProgress("проверяю $ip…")
             val r = verify(ip, 1500)
@@ -124,24 +131,35 @@ object TvDiscovery {
                     source = sourceOf(ip, savedHost, knownIps, ssdp)
                 )
                 found.add(res)
-                stage("ТВ найден: ${res.name} — ${res.model} ($ip)")
+                stage("ТВ найден (Tizen): ${res.name} — ${res.model} ($ip)")
             } else {
                 // Не отвечает по Tizen-API (2016+). Может, это старый Samsung
-                // (2014 и раньше) — спросим его имя по http://IP:7676/ms/1.0/
+                // (2011–2015) — спросим его имя по http://IP:7676/ms/1.0/
                 val dev = msDeviceInfo(ip)
                 if (dev != null) {
                     val res = Result(
                         ip = ip,
                         name = dev.first.ifBlank { "ТВ Samsung" },
                         model = dev.second,
-                        source = sourceOf(ip, savedHost, knownIps, ssdp) + " · старый протокол"
+                        source = sourceOf(ip, savedHost, knownIps, ssdp) + " · старый протокол",
+                        legacy = true
                     )
-                    unsupported.add(res)
-                    stage("Samsung без Tizen-API (старая модель): ${res.name} ${res.model} ($ip) — пульт его не поддерживает")
+                    found.add(res)
+                    stage("ТВ со старым протоколом: ${res.name} ${res.model} ($ip) — подключение через порт 55000")
+                } else if (legacyIps.contains(ip)) {
+                    val res = Result(
+                        ip = ip,
+                        name = "ТВ Samsung (старый)",
+                        model = "",
+                        source = sourceOf(ip, savedHost, knownIps, ssdp) + " · порт 55000",
+                        legacy = true
+                    )
+                    found.add(res)
+                    stage("Старый Samsung (открыт порт 55000, имя недоступно): $ip")
                 }
             }
         }
-        return Report(found, unsupported, log)
+        return Report(found, log)
     }
 
     /**
@@ -165,6 +183,16 @@ object TvDiscovery {
         }
     }
 
+    /** Открыт ли TCP-порт (быстрая проверка для выбора протокола подключения) */
+    fun portOpen(ip: String, port: Int, timeoutMs: Int): Boolean {
+        return try {
+            Socket().use { it.connect(InetSocketAddress(ip, port), timeoutMs) }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun sourceOf(
         ip: String,
         savedHost: String?,
@@ -179,8 +207,8 @@ object TvDiscovery {
 
     /**
      * Старые Samsung (до 2015) отдают описание по http://IP:7676/ms/1.0/ —
-     * XML с FriendlyName и ModelName. Если ответили — это точно ТВ Samsung,
-     * но с протоколом, который Tizen-пульт не умеет.
+     * XML с FriendlyName и ModelName. Если ответили — это ТВ Samsung
+     * со старым протоколом; подключим его через порт 55000.
      */
     private fun msDeviceInfo(ip: String): Pair<String, String>? {
         return try {
@@ -283,25 +311,41 @@ object TvDiscovery {
         }.distinct()
     }
 
-    /** Параллельный TCP-скан /24 по порту 8001 (24 потока, 400 мс на адрес) */
+    /** Параллельный TCP-скан /24 по портам 8001 и 55000 (32 потока, 400 мс на адрес) */
     private fun scanSubnet(prefix: String): ScanOutcome {
         val out = ScanOutcome()
-        val pool = Executors.newFixedThreadPool(24)
+        val pool = Executors.newFixedThreadPool(32)
         try {
             val futures = (1..254).map { i ->
                 pool.submit {
                     val ip = "$prefix.$i"
+                    var refused1 = false
+                    var silent1 = false
+                    var refused2 = false
+                    var silent2 = false
                     try {
-                        Socket().use { s ->
-                            s.connect(InetSocketAddress(ip, 8001), 400)
-                        }
-                        synchronized(out.open) { out.open.add(ip) }
+                        Socket().use { s -> s.connect(InetSocketAddress(ip, 8001), 400) }
+                        synchronized(out.open8001) { out.open8001.add(ip) }
                     } catch (_: ConnectException) {
-                        synchronized(out) { out.refused++ }
+                        refused1 = true
                     } catch (_: SocketTimeoutException) {
-                        synchronized(out) { out.silent++ }
+                        silent1 = true
                     } catch (_: Exception) {
-                        synchronized(out) { out.silent++ }
+                        silent1 = true
+                    }
+                    try {
+                        Socket().use { s -> s.connect(InetSocketAddress(ip, 55000), 400) }
+                        synchronized(out.open55000) { out.open55000.add(ip) }
+                    } catch (_: ConnectException) {
+                        refused2 = true
+                    } catch (_: SocketTimeoutException) {
+                        silent2 = true
+                    } catch (_: Exception) {
+                        silent2 = true
+                    }
+                    synchronized(out) {
+                        if (refused1 && refused2) out.refused++
+                        else if (silent1 && silent2) out.silent++
                     }
                 }
             }
