@@ -14,10 +14,13 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -28,10 +31,7 @@ import org.json.JSONObject
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 
 class MainActivity : AppCompatActivity() {
 
@@ -56,6 +56,18 @@ class MainActivity : AppCompatActivity() {
         val lastSeen: Long
     )
 
+    // ---------- Выбор ТВ сверху ----------
+
+    /** Строка выпадающего списка телевизоров */
+    private data class TvOption(val label: String, val ip: String, val supported: Boolean)
+
+    private lateinit var tvSpinner: Spinner
+    private var tvOptions: List<TvOption> = emptyList()
+    private var suppressSpin = false
+
+    /** Старые Samsung (2014 и т.п.), найденные последним поиском — не подключаются */
+    private var lastUnsupported: List<TvDiscovery.Result> = emptyList()
+
     @SuppressLint("SetTextI18n")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +78,29 @@ class MainActivity : AppCompatActivity() {
         statusView = findViewById(R.id.statusView)
 
         ipInput.setText(prefs.getString("host", ""))
+
+        // Выпадающий список телевизоров в верхней строке
+        tvSpinner = findViewById(R.id.tvSpinner)
+        tvSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, pos: Int, id: Long) {
+                if (suppressSpin) return
+                val opt = tvOptions.getOrNull(pos) ?: return
+                if (opt.ip.isEmpty()) {
+                    // Пункт-подсказка «ТВ не найден — нажмите Найти» — запускаем поиск
+                    findTv(manual = true)
+                    return
+                }
+                if (!opt.supported) {
+                    showUnsupportedDialog(opt)
+                    return
+                }
+                prefs.edit().putString("host", opt.ip).apply()
+                ipInput.setText(opt.ip)
+                connectToHost(opt.ip)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {}
+        }
 
         findViewById<Button>(R.id.btnConnect).setOnClickListener { connectManual() }
         findViewById<Button>(R.id.btnFind).setOnClickListener { findTv(manual = true) }
@@ -84,6 +119,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         // Автопоиск ТВ и подключение при запуске приложения
+        refreshTvSpinner(prefs.getString("host", null))
         findTv(manual = false)
     }
 
@@ -163,6 +199,7 @@ class MainActivity : AppCompatActivity() {
                     if (r != null) {
                         report = TvDiscovery.Report(
                             listOf(r.copy(source = "после Wake-on-LAN")),
+                            emptyList(),
                             listOf("WoL: ТВ проснулся и ответил ($saved)")
                         )
                         runOnUiThread { appendLog(report.log.first()) }
@@ -171,19 +208,25 @@ class MainActivity : AppCompatActivity() {
             }
 
             rememberFound(report.found)
+            lastUnsupported = report.unsupported
 
-            when {
-                report.found.size == 1 -> {
-                    val tv = report.found[0]
-                    prefs.edit().putString("host", tv.ip).apply()
-                    runOnUiThread { ipInput.setText(tv.ip) }
-                    connectToHost(tv.ip)
-                }
-                report.found.size > 1 -> runOnUiThread { showTvPicker(report.found) }
-                else -> runOnUiThread {
-                    statusView.text = "ТВ не найден. Включите ТВ, проверьте Wi-Fi или введите IP вручную"
-                    val hist = loadKnown()
-                    if (hist.isNotEmpty()) showTvPicker(emptyList(), hist)
+            runOnUiThread {
+                when {
+                    report.found.size == 1 -> {
+                        val tv = report.found[0]
+                        prefs.edit().putString("host", tv.ip).apply()
+                        ipInput.setText(tv.ip)
+                        refreshTvSpinner(tv.ip)
+                        connectToHost(tv.ip)
+                    }
+                    report.found.size > 1 -> {
+                        statusView.text = "Найдено ТВ: ${report.found.size} — выберите в списке сверху"
+                        refreshTvSpinner(prefs.getString("host", null))
+                    }
+                    else -> {
+                        statusView.text = "ТВ не найден. Включите ТВ, проверьте Wi-Fi или введите IP вручную"
+                        refreshTvSpinner(prefs.getString("host", null))
+                    }
                 }
             }
         }.start()
@@ -224,47 +267,59 @@ class MainActivity : AppCompatActivity() {
         prefs.edit().putString("knownTvs", arr.toString()).apply()
     }
 
-    private fun lastSeenText(ts: Long): String {
-        if (ts <= 0) return "ранее"
-        val days = TimeUnit.MILLISECONDS.toDays(System.currentTimeMillis() - ts)
-        return when {
-            days <= 0 -> "сегодня"
-            days == 1L -> "вчера"
-            days < 7 -> "$days дн. назад"
-            else -> SimpleDateFormat("dd.MM", Locale.getDefault()).format(Date(ts))
+    /**
+     * Пересобирает выпадающий список ТВ сверху:
+     * рабочие ТВ (найденные сейчас + история), затем старые (не поддерживаются).
+     */
+    private fun refreshTvSpinner(selectIp: String? = null) {
+        val opts = mutableListOf<TvOption>()
+        val seen = mutableSetOf<String>()
+        for (k in loadKnown()) {
+            if (seen.add(k.ip)) {
+                val mark = if (selectIp == k.ip) "▸ " else ""
+                opts.add(TvOption("$mark${k.name} — ${k.model.ifBlank { "Samsung" }} — ${k.ip}", k.ip, true))
+            }
         }
+        for (r in lastUnsupported) {
+            if (seen.add(r.ip)) {
+                opts.add(
+                    TvOption(
+                        "${r.name} — ${r.model.ifBlank { "Samsung" }} — ${r.ip} — старая модель, не поддерживается",
+                        r.ip,
+                        false
+                    )
+                )
+            }
+        }
+        if (opts.isEmpty()) {
+            opts.add(TvOption("ТВ не найден — нажмите «Найти»", "", false))
+        }
+        tvOptions = opts
+
+        suppressSpin = true
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, opts.map { it.label })
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        tvSpinner.adapter = adapter
+        val sel = opts.indexOfFirst { it.ip == selectIp }
+        if (sel >= 0) tvSpinner.setSelection(sel)
+        // onItemSelected приходит после отрисовки — снимаем блокировку позже
+        tvSpinner.post { suppressSpin = false }
     }
 
-    /**
-     * Список ТВ: несколько найденных сейчас или найденные ранее
-     * (когда ни один не ответил). Тап — подключение.
-     */
-    private fun showTvPicker(live: List<TvDiscovery.Result>, offline: List<KnownTv> = emptyList()) {
-        val labels = ArrayList<String>()
-        val ips = ArrayList<String>()
-        for (tv in live) {
-            val model = tv.model.ifBlank { "Samsung" }
-            labels.add("${tv.name} — $model — ${tv.ip} · ${tv.source}")
-            ips.add(tv.ip)
-        }
-        for (k in offline) {
-            if (live.any { it.ip == k.ip }) continue
-            labels.add("• ${k.name.ifBlank { "ТВ" }} — ${k.ip} (в сети ${lastSeenText(k.lastSeen)})")
-            ips.add(k.ip)
-        }
-        if (labels.isEmpty()) return
+    /** Старые ТВ (2014 и раньше): у них другой протокол — объясняем, но даём попробовать */
+    private fun showUnsupportedDialog(opt: TvOption) {
         AlertDialog.Builder(this)
-            .setTitle(
-                if (live.size > 1) "Найдено ТВ: ${live.size} — выберите"
-                else "Найденные ранее ТВ"
+            .setTitle("ТВ со старым протоколом")
+            .setMessage(
+                "${opt.label}\n\nЭта модель отвечает только по старому протоколу Samsung " +
+                    "(до 2015 года). Этот пульт управляет ТВ с Tizen (2016 и новее)."
             )
-            .setItems(labels.toTypedArray()) { _, i ->
-                val ip = ips[i]
-                ipInput.setText(ip)
-                prefs.edit().putString("host", ip).apply()
-                connectToHost(ip)
+            .setPositiveButton("Понятно", null)
+            .setNeutralButton("Всё равно попробовать") { _, _ ->
+                ipInput.setText(opt.ip)
+                prefs.edit().putString("host", opt.ip).apply()
+                connectToHost(opt.ip)
             }
-            .setNegativeButton("Закрыть", null)
             .show()
     }
 

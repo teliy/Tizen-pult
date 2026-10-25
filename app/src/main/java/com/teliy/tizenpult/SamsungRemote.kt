@@ -18,6 +18,8 @@ import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Collections
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
@@ -46,6 +48,8 @@ class SamsungRemote(
     @Volatile private var appsReceived = false      // ТВ прислал список приложений
     @Volatile private var imeSeen = false           // клавиатура на ТВ открывалась в сеансе
     @Volatile private var textBroadcastSent = false // broadcast textReceived — 1 раз за сеанс
+    /** Буфер для requestApps: WS-ответы собираются сюда, а не уходят в UI поодиночке */
+    @Volatile private var pendingApps: MutableList<AppInfo>? = null
 
     /** ТВ использует самоподписанный сертификат — доверяем ему в рамках локальной сети */
     private val trustManager: X509TrustManager = object : X509TrustManager {
@@ -141,8 +145,14 @@ class SamsungRemote(
             "ed.installedApp.get", "ed.edenAppList.get" -> {
                 appsReceived = true
                 val apps = parseApps(obj)
-                log("Список приложений: ${apps.size} шт.")
-                if (apps.isNotEmpty()) onApps(apps)
+                val buf = pendingApps
+                if (buf != null) {
+                    buf.addAll(apps)
+                    log("WS-список: +${apps.size} шт.")
+                } else {
+                    log("Список приложений: ${apps.size} шт.")
+                    if (apps.isNotEmpty()) onApps(apps)
+                }
             }
 
             "ed.apps.launch" -> {
@@ -192,6 +202,8 @@ class SamsungRemote(
         if (arr != null) {
             for (i in 0 until arr.length()) {
                 val a = arr.optJSONObject(i) ?: continue
+                // visible:false — скрытые/служебные записи, пользователю они не нужны
+                if (!a.optBoolean("visible", true)) continue
                 val id = a.optString("appId")
                 val name = a.optString("name")
                 if (id.isNotBlank() && name.isNotBlank()) result.add(AppInfo(id, name))
@@ -337,15 +349,20 @@ class SamsungRemote(
     }
 
     /**
-     * Список приложений — каскад из трёх стратегий:
-     * 1) WS ed.installedApp.get (на Tizen 5+ Samsung отключила ответ — issue #23 эталона);
-     * 2) REST GET /api/v2/applications (полный список, если прошивка умеет);
-     * 3) REST-проверка известных приложений по ID (таблицы сообщества:
+     * Список приложений — ВСЕ стратегии сливаются в один список (а не каскадом):
+     * 1) WS ed.installedApp.get + ed.edenAppList.get (полный список, если прошивка отвечает);
+     * 2) REST GET /api/v2/applications (на Tizen 5+ отдаёт только «fetchable» — их мало);
+     * 3) REST-проверка известных приложений по ID параллельно (таблицы сообщества:
      *    tavicu/homebridge-samsung-tizen, rs.ltd) — 200 = установлено.
-     * Каждый шаг пишет в журнал свой результат.
+     * Раньше каскад останавливался на первом непустом результате — из-за этого
+     * REST-список из 2 приложений («fetchable») перекрывал всё остальное.
      */
     fun requestApps() {
         appsReceived = false
+        val wsBuffer = mutableListOf<AppInfo>()
+        pendingApps = wsBuffer
+
+        // Стратегия 1: оба WS-события (разные прошивки отвечают на разные)
         send(JSONObject().apply {
             put("method", "ms.channel.emit")
             put("params", JSONObject().apply {
@@ -353,60 +370,88 @@ class SamsungRemote(
                 put("to", "host")
             })
         })
+        send(JSONObject().apply {
+            put("method", "ms.channel.emit")
+            put("params", JSONObject().apply {
+                put("event", "ed.edenAppList.get")
+                put("to", "host")
+            })
+        })
+
         Thread {
+            // Ждём оба WS-ответа (если придут)
             Thread.sleep(4000)
-            if (appsReceived) return@Thread
+            pendingApps = null
 
-            log("ТВ молчит по WS — на Tizen 5+ список через ed.installedApp.get отключён Samsung")
             val found = mutableListOf<AppInfo>()
+            val seenIds = mutableSetOf<String>()
             val seenNames = mutableSetOf<String>()
+            val wsCount = wsBuffer.size
 
-            // Стратегия 2: REST-список целиком (маловероятно, но проверяем — дёшево)
-            log("Стратегия 2: GET /api/v2/applications (полный список) на 8001 и 8002")
+            fun addApp(a: AppInfo) {
+                val nm = a.name.ifBlank { a.appId }
+                if (seenIds.add(a.appId) && seenNames.add(nm.lowercase(Locale.ROOT))) {
+                    found.add(AppInfo(a.appId, nm))
+                }
+            }
+
+            // Стратегия 2: REST-список (мало приложений, но тоже в общий котёл)
+            var restCount = 0
             for ((scheme, port) in listOf("http" to 8001, "https" to 8002)) {
                 val (code, body) = restGet(scheme, port, "applications")
                 if (code in 200..299) {
                     val list = parseAppJson(body)
-                    log("↳ $scheme:$port отдал ${list.size} приложений")
-                    for (a in list) {
-                        if (seenNames.add(a.name)) found.add(a)
-                    }
-                    if (found.isNotEmpty()) break
+                    restCount += list.size
+                    for (a in list) addApp(a)
                 }
             }
+            log("Список: WS → $wsCount шт., REST → $restCount шт., объединено → ${found.size}")
 
-            // Стратегия 3: по одному ID из таблицы известных приложений
-            if (found.isEmpty()) {
-                log("Стратегия 3: проверяю ${KNOWN_APPS.size} известных ID (200 = установлено, 404 = нет)")
-                val t = token
-                for ((i, app) in KNOWN_APPS.withIndex()) {
-                    val (id, name) = app
-                    var (code, body) = restGet("http", 8001, "applications/$id")
-                    // Порт 8001 мёртв (сеть) или требует токен — пробуем 8002;
-                    // чистый 404 значит порт жив, а приложения просто нет
-                    if (code == -1 || code == 401) {
+            // Стратегия 3: известные ID — ВСЕГДА, параллельно в 8 потоков
+            log("Проверяю ${KNOWN_APPS.size} известных ID (200 = установлено)…")
+            val t = token
+            val probeHits = Collections.synchronizedList(mutableListOf<AppInfo>())
+            val pool = Executors.newFixedThreadPool(8)
+            val futures = KNOWN_APPS.map { (id, name) ->
+                pool.submit {
+                    var (code, body) = restGet("http", 8001, "applications/$id", quiet = true)
+                    if (code == 401 && !t.isNullOrBlank()) {
+                        val r = restGet("http", 8001, "applications/$id?token=$t", quiet = true)
+                        code = r.first; body = r.second
+                    }
+                    if (code == -1) {
+                        var r = restGet("https", 8002, "applications/$id", quiet = true)
+                        code = r.first; body = r.second
                         if (code == 401 && !t.isNullOrBlank()) {
-                            val r = restGet("http", 8001, "applications/$id?token=$t")
+                            r = restGet("https", 8002, "applications/$id?token=$t", quiet = true)
                             code = r.first; body = r.second
                         }
-                        if (code == -1) {
-                            code = restGet("https", 8002, "applications/$id").first
-                        }
-                    }
-                    if (i == 0 && code == -1) {
-                        log("ТВ не отвечает по REST — прерываю проверку (сеть/ТВ выключен)")
-                        break
                     }
                     if (code in 200..299) {
                         val nameFromBody = try { JSONObject(body).optString("name") } catch (_: Exception) { "" }
                         val clean = nameFromBody.ifBlank { name }.substringBefore(" (")
-                        if (seenNames.add(clean)) found.add(AppInfo(id, clean))
+                        probeHits.add(AppInfo(id, clean))
                     }
                 }
             }
+            for (f in futures) {
+                try {
+                    f.get(15, TimeUnit.SECONDS)
+                } catch (_: Exception) {
+                }
+            }
+            pool.shutdownNow()
+            for (a in probeHits) addApp(a)
+            log("Пробы известных ID: найдено ${probeHits.size}")
+
+            // Если совсем пусто — один подробный запрос для диагностики в журнале
+            if (found.isEmpty()) {
+                restGet("http", 8001, "applications/org.tizen.browser")
+            }
 
             if (found.isNotEmpty()) {
-                log("✔ Итого установленных из известных: ${found.size}")
+                found.sortWith(compareBy { it.name.lowercase(Locale.ROOT) })
+                log("✔ Итого приложений: ${found.size}")
                 onApps(found)
             } else {
                 log("Список получить не удалось — пришлите журнал целиком: по кодам 404/401/-1 видно, что отвечает прошивка")
@@ -433,6 +478,7 @@ class SamsungRemote(
             if (arr != null) {
                 for (i in 0 until arr.length()) {
                     val a = arr.optJSONObject(i) ?: continue
+                    if (!a.optBoolean("visible", true)) continue // скрытые/служебные
                     val id = a.optString("appId").ifBlank { a.optString("id") }
                     val name = a.optString("name").ifBlank { a.optString("appName") }
                     if (id.isNotBlank()) out.add(AppInfo(id, name.ifBlank { id }))
@@ -447,9 +493,16 @@ class SamsungRemote(
      * REST-запрос к ТВ через OkHttp (доверяет самоподписанному сертификату ТВ —
      * важно для https:8002). Каждый вызов пишет в журнал строку вида
      * «↳ HTTP 404 ← http:8001 GET /api/v2/applications/... :: тело» — для диагностики.
-     * Возвращает (HTTP-код, тело); код -1 при сетевой ошибке.
+     * quiet=true — успешные ответы (200) не пишутся (для массовых проб ID);
+     * ошибки и не-200 пишутся всегда. Возвращает (HTTP-код, тело); код -1 при сетевой ошибке.
      */
-    private fun restGet(scheme: String, port: Int, route: String, method: String = "GET"): Pair<Int, String> {
+    private fun restGet(
+        scheme: String,
+        port: Int,
+        route: String,
+        method: String = "GET",
+        quiet: Boolean = false
+    ): Pair<Int, String> {
         return try {
             val postBody: RequestBody? = if (method == "POST") ByteArray(0).toRequestBody() else null
             val request = Request.Builder()
@@ -459,8 +512,10 @@ class SamsungRemote(
             fastClient.newCall(request).execute().use { resp ->
                 val code = resp.code
                 val body = resp.body?.string() ?: ""
-                val bodyPart = if (body.isNotBlank()) " :: " + body.take(160).replace('\n', ' ') else ""
-                log("↳ HTTP $code ← $scheme:$port $method /api/v2/$route$bodyPart")
+                if (!quiet || code !in 200..299) {
+                    val bodyPart = if (body.isNotBlank()) " :: " + body.take(160).replace('\n', ' ') else ""
+                    log("↳ HTTP $code ← $scheme:$port $method /api/v2/$route$bodyPart")
+                }
                 code to body
             }
         } catch (e: Exception) {

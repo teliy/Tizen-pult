@@ -43,8 +43,9 @@ object TvDiscovery {
     )
 
     data class Report(
-        val found: List<Result>,   // ТВ, ответившие прямо сейчас
-        val log: List<String>      // подробности всех этапов — в журнал
+        val found: List<Result>,          // ТВ, ответившие по Tizen-API прямо сейчас
+        val unsupported: List<Result>,    // ТВ Samsung со старым протоколом (2014 и т.п.)
+        val log: List<String>             // подробности всех этапов — в журнал
     )
 
     class ScanOutcome {
@@ -114,6 +115,7 @@ object TvDiscovery {
 
         // 4. Проверка всех кандидатов REST-запросом /api/v2/
         val found = mutableListOf<Result>()
+        val unsupported = mutableListOf<Result>()
         for (ip in candidates) {
             onProgress("проверяю $ip…")
             val r = verify(ip, 1500)
@@ -123,9 +125,23 @@ object TvDiscovery {
                 )
                 found.add(res)
                 stage("ТВ найден: ${res.name} — ${res.model} ($ip)")
+            } else {
+                // Не отвечает по Tizen-API (2016+). Может, это старый Samsung
+                // (2014 и раньше) — спросим его имя по http://IP:7676/ms/1.0/
+                val dev = msDeviceInfo(ip)
+                if (dev != null) {
+                    val res = Result(
+                        ip = ip,
+                        name = dev.first.ifBlank { "ТВ Samsung" },
+                        model = dev.second,
+                        source = sourceOf(ip, savedHost, knownIps, ssdp) + " · старый протокол"
+                    )
+                    unsupported.add(res)
+                    stage("Samsung без Tizen-API (старая модель): ${res.name} ${res.model} ($ip) — пульт его не поддерживает")
+                }
             }
         }
-        return Report(found, log)
+        return Report(found, unsupported, log)
     }
 
     /**
@@ -159,6 +175,26 @@ object TvDiscovery {
         ssdp.contains(ip) -> "SSDP"
         knownIps.contains(ip) -> "найден ранее"
         else -> "скан сети"
+    }
+
+    /**
+     * Старые Samsung (до 2015) отдают описание по http://IP:7676/ms/1.0/ —
+     * XML с FriendlyName и ModelName. Если ответили — это точно ТВ Samsung,
+     * но с протоколом, который Tizen-пульт не умеет.
+     */
+    private fun msDeviceInfo(ip: String): Pair<String, String>? {
+        return try {
+            val conn = URL("http://$ip:7676/ms/1.0/").openConnection() as HttpURLConnection
+            conn.connectTimeout = 1200
+            conn.readTimeout = 1200
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            val friendly = Regex("<FriendlyName>(.*?)</FriendlyName>").find(body)?.groupValues?.get(1) ?: ""
+            val model = Regex("<ModelName>(.*?)</ModelName>").find(body)?.groupValues?.get(1) ?: ""
+            if (friendly.isBlank() && model.isBlank()) null else friendly.removePrefix("[") to model
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
