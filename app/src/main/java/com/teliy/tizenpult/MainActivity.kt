@@ -390,7 +390,7 @@ class MainActivity : AppCompatActivity() {
         val aliveAfter = if (proto == "smart") 330_000L else 30_000L
         val t0 = System.currentTimeMillis()
         while (true) {
-            if (r.isConnected()) return true
+            // rejected — первым: у ws://8001 connect успешен, но пробы API ещё могут отклониться
             if (r.isRejected()) {
                 // ws://8001 отклонён ТВ — убираем его из сохранённых, чтобы не пробовать первым
                 if (prefs.getString("proto:$host", null) == "ws") {
@@ -398,6 +398,7 @@ class MainActivity : AppCompatActivity() {
                 }
                 return false
             }
+            if (r.isConnected()) return true
             val elapsed = System.currentTimeMillis() - t0
             // 30 с — если транспорт жив (например, ТВ ждёт «Разрешить» на экране),
             // 8 с — если транспорт так и не поднялся

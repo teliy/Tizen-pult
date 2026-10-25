@@ -12,7 +12,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.URL
 import java.security.SecureRandom
 import java.security.cert.X509Certificate
 import java.text.SimpleDateFormat
@@ -70,7 +72,8 @@ class SamsungRemote(
     @Volatile private var wsProbeActive = false
     @Volatile private var wsProbeErrors = 0
 
-    fun isConnected(): Boolean = connected
+    /** Для ws://8001 «подключено» = пробы API прошли (Orsay принимает connect, но отклоняет API) */
+    fun isConnected(): Boolean = connected && !wsProbeActive
     fun isTransportAlive(): Boolean = transportAlive
     fun isRejected(): Boolean = rejected
     private fun isLegacy(): Boolean = proto == "legacy" || proto == "legacy-aes"
@@ -450,8 +453,7 @@ class SamsungRemote(
      */
     fun launchApp(appId: String) {
         if (isLegacy() || isSmart()) {
-            log("Запуск приложений недоступен по старому протоколу (${if (isSmart()) "Smart View 2.0" else "55000"})")
-            onStatus("На старых ТВ (до 2016) запуск приложений недоступен")
+            launchAppOrsay(appId)
             return
         }
         launchAck = false
@@ -521,9 +523,7 @@ class SamsungRemote(
      */
     fun requestApps() {
         if (isLegacy() || isSmart()) {
-            log("Старый протокол (${if (isSmart()) "Smart View 2.0" else "55000"}) не отдаёт список приложений — доступны кнопки пульта")
-            onStatus("На старых ТВ (до 2016) список приложений недоступен")
-            onApps(emptyList())
+            requestAppsOrsay()
             return
         }
         appsReceived = false
@@ -626,6 +626,106 @@ class SamsungRemote(
                 onApps(emptyList())
             }
         }.start()
+    }
+
+    /**
+     * Orsay (2011–2015): полного списка приложений протокол не отдаёт, НО
+     * REST-поверхность /ws/apps/ (порт 8080) отвечает 200 для УСТАНОВЛЕННЫХ
+     * приложений (та же поверхность, что CloudPINPage). Проверяем таблицу
+     * известных ID — найденное показываем в списке; запуск — POST /ws/apps/<id>/run.
+     */
+    private fun requestAppsOrsay() {
+        Thread {
+            val port = orsayPort()
+            onStatus("Проверяю известные приложения на ТВ (REST :$port)…")
+            log("Orsay: проверяю ${ORSAY_KNOWN_APPS.size} известных ID через GET /ws/apps/<id>…")
+            val hits = Collections.synchronizedList(mutableListOf<AppInfo>())
+            val pool = Executors.newFixedThreadPool(8)
+            val futures = ORSAY_KNOWN_APPS.map { (id, name) ->
+                pool.submit {
+                    val (code, body) = orsayRest(port, "ws/apps/$id", "GET", quiet = true)
+                    if (code in 200..299) {
+                        // имя из ответа ТВ (<name>/<title>), иначе — из нашей таблицы
+                        val nm = Regex("<(name|title)>([^<]+)</", RegexOption.IGNORE_CASE)
+                            .find(body)?.groupValues?.get(2)?.trim().takeUnless { it.isNullOrBlank() } ?: name
+                        hits.add(AppInfo(id, nm))
+                    }
+                }
+            }
+            for (f in futures) {
+                try { f.get(20, TimeUnit.SECONDS) } catch (_: Exception) {}
+            }
+            pool.shutdownNow()
+            // дубли по имени (у YouTube/Netflix по два ID — оставляем первый сработавший)
+            val list = hits.distinctBy { it.name.lowercase(Locale.ROOT) }
+                .sortedBy { it.name.lowercase(Locale.ROOT) }
+            if (list.isNotEmpty()) {
+                log("✔ Найдено установленных (из известных ID): ${list.size}")
+                onStatus("Найдено приложений: ${list.size}")
+                onApps(list)
+            } else {
+                log("✖ Ни один известный ID не подтвердился — полный список приложений по старому протоколу недоступен")
+                onStatus("Список недоступен — доступны кнопки пульта")
+                onApps(emptyList())
+            }
+        }.start()
+    }
+
+    /** Запуск приложения на Orsay: POST /ws/apps/<id>/run, запасной — POST /ws/apps/<id> */
+    private fun launchAppOrsay(appId: String) {
+        Thread {
+            val port = orsayPort()
+            var (code, body) = orsayRest(port, "ws/apps/$appId/run", "POST")
+            if (code !in 200..299) {
+                // часть прошивок запускает POST-ом самого приложения (как CloudPINPage)
+                val r = orsayRest(port, "ws/apps/$appId", "POST")
+                code = r.first; body = r.second
+            }
+            if (code in 200..299) {
+                log("✔ Приложение запущено (HTTP $code)${if (body.isNotBlank()) " :: " + body.take(120).replace('\n', ' ') else ""}")
+                onStatus("Приложение запускается…")
+            } else {
+                log("✖ Запуск не удался (HTTP $code) — приложение не установлено или ID не подходит этой прошивке")
+                onStatus("Не удалось запустить приложение (HTTP $code)")
+            }
+        }.start()
+    }
+
+    @Volatile private var orsayRestPort = 0
+
+    /** REST-порт Orsay-поверхности /ws/: у smart берём найденный при сопряжении, иначе 8080/8000 */
+    private fun orsayPort(): Int {
+        if (orsayRestPort != 0) return orsayRestPort
+        val fromSmart = if (isSmart()) smart?.chosenRestPort()?.takeIf { it > 0 } else null
+        if (fromSmart != null) { orsayRestPort = fromSmart; return fromSmart }
+        for (p in intArrayOf(8080, 8000)) {
+            val (code, _) = orsayRest(p, "ws/apps/1112990019", "GET", quiet = true)
+            if (code > 0) { orsayRestPort = p; return p }
+        }
+        orsayRestPort = 8080
+        return orsayRestPort
+    }
+
+    /** REST-запрос к Orsay-поверхности /ws/ (БЕЗ префикса /api/v2, порт 8080/8000) */
+    private fun orsayRest(port: Int, route: String, method: String, quiet: Boolean = false): Pair<Int, String> {
+        return try {
+            val conn = URL("http://$host:$port/$route").openConnection() as HttpURLConnection
+            conn.requestMethod = method
+            conn.connectTimeout = 3000
+            conn.readTimeout = 6000
+            val code = conn.responseCode
+            val body = (if (code in 200..299) conn.inputStream else conn.errorStream)
+                ?.bufferedReader()?.readText() ?: ""
+            conn.disconnect()
+            if (!quiet || code !in 200..299) {
+                val bodyPart = if (body.isNotBlank()) " :: " + body.take(160).replace('\n', ' ') else ""
+                log("↳ HTTP $code ← $method /$route$bodyPart")
+            }
+            code to body
+        } catch (e: Exception) {
+            if (!quiet) log("!! $method /$route: ${e.message}")
+            -1 to ""
+        }
     }
 
     /** Разбор возможных форматов REST-списка: {"data":[…]}, {"data":{"data":[…]}}, [ … ] */
@@ -817,6 +917,35 @@ class SamsungRemote(
             "3201710015016" to "SmartThings",
             "3201710015037" to "Gallery",
             "3201602007756" to "Red Bull TV"
+        )
+
+        /**
+         * Известные ID приложений Orsay-эры (2011–2015). Проверяются через
+         * GET /ws/apps/<id> (порт 8080): 200 = установлено, 404 = нет.
+         * «Левые» ID из таблиц сообщества (старый формат 11–12 цифр) + часть
+         * Tizen-эры на случай прошивок 2015 — лишние просто отсеются по 404.
+         */
+        val ORSAY_KNOWN_APPS: List<Pair<String, String>> = listOf(
+            "1112990019" to "YouTube",
+            "111299001912" to "YouTube",
+            "11101200001" to "Netflix",
+            "320160600" to "Netflix",
+            "32015010026" to "Веб-браузер",
+            "11091000000" to "Facebook",
+            "121299000101" to "TuneIn Radio",
+            "111399000741" to "The Weather Network",
+            "121299000089" to "ITV Hub",
+            "111299002148" to "All 4",
+            "111012010001" to "VUDU",
+            "111299000769" to "VOYO",
+            "111399002034" to "RaiPlay",
+            "3201512006963" to "Plex",
+            "3201512006785" to "Prime Video",
+            "3201601007625" to "Hulu",
+            "3201606009684" to "Spotify",
+            "3201606009872" to "Emby",
+            "3201806016390" to "DAZN",
+            "3201601007230" to "HBO"
         )
 
         /**

@@ -62,6 +62,10 @@ class SmartViewRemote(
     @Volatile private var sessionId: String? = null
     @Volatile private var authOk = false
     @Volatile private var stopping = false
+    @Volatile private var restPortChosen = 0
+
+    /** REST-порт, найденный при подключении (8080/8000) — для Orsay-запросов приложений */
+    fun chosenRestPort(): Int = restPortChosen
 
     private val timeFmt = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
     private fun log(msg: String) = onLog("${timeFmt.format(Date())}  $msg")
@@ -89,6 +93,7 @@ class SmartViewRemote(
                         return@Thread
                     }
                 log("Smart View 2.0: REST-порт $restPort")
+                restPortChosen = restPort
 
                 if (tokenHex == null) {
                     if (!pairWithPin(restPort)) {
@@ -308,6 +313,9 @@ class SmartViewRemote(
                         webSocket.send("2::")
                     }
                     text.startsWith("1::") -> markConnected()
+                    // ответы ТВ шифрованы токеном сеанса — расшифровываем для журнала
+                    text.startsWith("5::/com.samsung.companion:") ->
+                        log("◀ ТВ: ${decryptFrameText(text).take(220)}")
                     else -> log("◀ ТВ: ${text.take(200)}")
                 }
             }
@@ -343,6 +351,23 @@ class SmartViewRemote(
     }
 
     // ---------- шифрование команд ----------
+
+    /** Расшифровка ответа ТВ (кадр 5::…receiveCommon) токеном сеанса: AES-128-ECB + PKCS7 */
+    private fun decryptFrameText(frame: String): String {
+        return try {
+            val args = JSONObject(frame.substringAfter("companion:")).optString("args")
+            val parts = args.removeSurrounding("[", "]").split(",")
+            val data = ByteArray(parts.size) { (parts[it].trim().toInt() and 0xFF).toByte() }
+            val c = Cipher.getInstance("AES/ECB/NoPadding")
+            c.init(Cipher.DECRYPT_MODE, SecretKeySpec(hexToBytes(tokenHex ?: ""), "AES"))
+            val dec = c.doFinal(data)
+            val pad = (dec.lastOrNull()?.toInt() ?: 0) and 0xFF
+            val clean = if (pad in 1..16 && dec.size > pad) dec.copyOfRange(0, dec.size - pad) else dec
+            String(clean, Charsets.UTF_8)
+        } catch (e: Exception) {
+            "— (не расшифровано: ${e.message ?: "?"})"
+        }
+    }
 
     /** 5::/com.samsung.companion:{"name":"callCommon","args":[{"Session_Id":N,"body":"[байты]"}]} */
     private fun encryptFrame(json: String): String {
