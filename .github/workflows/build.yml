@@ -1,7 +1,8 @@
-name: Build APK
+name: Build APK & AAB
 
 # Сборка при каждом пуше и по кнопке Run workflow;
-# при пуше тега v* — сборка + автоматический Release с APK
+# при пуше тега v* — сборка + автоматический Release с APK (сидлоад/RuStore)
+# и AAB (обязателен для новых приложений в Google Play)
 on:
   push:
   workflow_dispatch:
@@ -31,11 +32,16 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon
 
-      - name: Сохранить APK в артефакты
+      - name: Сборка App Bundle (для Google Play)
+        run: ./gradlew bundleRelease --no-daemon
+
+      - name: Сохранить APK и AAB в артефакты
         uses: actions/upload-artifact@v4
         with:
-          name: Tizen-pult-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: Pultoo-build
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
       - name: Публикация Release (только при пуше тега v*)
@@ -45,10 +51,14 @@ jobs:
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
           cp app/build/outputs/apk/debug/app-debug.apk "Tizen-Pult-${TAG}.apk"
-          gh release create "$TAG" "Tizen-Pult-${TAG}.apk" \
-            --title "Tizen-Pult ${TAG}" \
+          cp app/build/outputs/bundle/release/app-release.aab "Tizen-Pult-${TAG}.aab"
+          gh release create "$TAG" "Tizen-Pult-${TAG}.apk" "Tizen-Pult-${TAG}.aab" \
+            --title "Pultoo ${TAG}" \
             --notes "Автоматическая сборка из ветки main (${GITHUB_SHA::7}).
 
-          Установка: скачать APK и открыть его на телефоне.
+          Pultoo: Remote for Samsung — пульт для Samsung Smart TV.
+
+          APK — установка на телефон (скачать и открыть) и для RuStore.
+          AAB — для загрузки в Google Play Console.
           Обновление внутри приложения: кнопка «Проверить обновления»." \
             --repo "${GITHUB_REPOSITORY}"

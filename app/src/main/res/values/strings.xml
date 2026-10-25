@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- v3.5: имя приложения не переводится -->
-    <string name="app_name" translatable="false">Pulto</string>
+    <!-- v3.6: имя приложения не переводится; в маркете — «Pultoo: Remote for Samsung» -->
+    <string name="app_name" translatable="false">Pultoo</string>
     <string name="add_app_btn">+ app</string>
     <string name="add_key_btn">+ key</string>
     <string name="already_connecting">Already connecting…</string>

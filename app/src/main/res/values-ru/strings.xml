@@ -1,7 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- v3.5: имя приложения не переводится -->
-    <string name="app_name" translatable="false">Pulto</string>
     <string name="add_app_btn">+ приложение</string>
     <string name="add_key_btn">+ клавиша</string>
     <string name="already_connecting">Подключение уже идет…</string>
